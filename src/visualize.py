@@ -32,6 +32,16 @@ _STATIC  = (0.15, 0.15, 0.15)  # dark grey / black
 _DYNAMIC = (0.9, 0.2, 0.2)   # red
 _PATH    = (0.2, 0.5, 1.0)   # blue
 
+# Robot colour palette (for multi-robot views)
+ROBOT_COLORS = ["#3399FF", "#FF6633", "#33CC66", "#CC33FF", "#FFCC00"]
+ROBOT_COLORS_RGB = [
+    (0.2, 0.6, 1.0),   # blue
+    (1.0, 0.4, 0.2),   # orange
+    (0.2, 0.8, 0.4),   # green
+    (0.8, 0.2, 1.0),   # purple
+    (1.0, 0.8, 0.0),   # yellow
+]
+
 
 def draw_grid(
     grid: Grid,
@@ -508,4 +518,346 @@ def draw_algorithm_comparison(
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"[visualize] Saved algorithm comparison to {save_path}")
+    return fig
+
+
+# ==================================================================
+# Multi-Robot Visualization
+# ==================================================================
+
+def draw_multi_robot_grid(
+    grid: Grid,
+    robot_paths: Optional[Dict[int, List[Position]]] = None,
+    title: str = "Multi-Robot Environment",
+    show: bool = False,
+    save_path: Optional[str] = None,
+    figsize: Tuple[int, int] = (10, 10),
+) -> plt.Figure:
+    """
+    Draw the grid with multiple robots' start/goal and their paths.
+
+    Parameters
+    ----------
+    grid : Grid
+        Environment with robot_configs and dynamic_obstacles set.
+    robot_paths : dict or None
+        robot_id → list of positions.  If None, only start/goal shown.
+    """
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+
+    # Base image
+    img = np.ones((grid.size, grid.size, 3), dtype=np.float32)
+    for r in range(grid.size):
+        for c in range(grid.size):
+            if grid.grid[r, c] == 1:
+                img[r, c] = _STATIC
+
+    # Dynamic obstacles
+    for obs in grid.dynamic_obstacles:
+        pr, pc = obs["pos"]
+        if 0 <= pr < grid.size and 0 <= pc < grid.size:
+            img[pr, pc] = _DYNAMIC
+
+    ax.imshow(img, origin="upper", interpolation="nearest")
+
+    # Grid lines
+    ax.set_xticks(np.arange(-0.5, grid.size, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, grid.size, 1), minor=True)
+    ax.grid(which="minor", color="grey", linewidth=0.3)
+    ax.tick_params(which="minor", size=0)
+    ax.set_xticks(np.arange(0, grid.size, 5))
+    ax.set_yticks(np.arange(0, grid.size, 5))
+
+    # Plot each robot's path, start, and goal
+    for cfg in grid.robot_configs:
+        rid = cfg["id"]
+        color = ROBOT_COLORS[rid % len(ROBOT_COLORS)]
+        sr, sc = cfg["start"]
+        gr, gc = cfg["goal"]
+
+        # Path
+        if robot_paths and rid in robot_paths:
+            path = robot_paths[rid]
+            if len(path) >= 2:
+                cols = [p[1] for p in path]
+                rows = [p[0] for p in path]
+                ax.plot(cols, rows, color=color, linewidth=2.5, alpha=0.8,
+                        label=f"Robot {rid}")
+
+        # Start marker (circle)
+        ax.plot(sc, sr, marker="o", markersize=14, color=color,
+                markeredgecolor="black", markeredgewidth=1.5, zorder=5)
+        ax.text(sc, sr, f"S{rid}", ha="center", va="center",
+                fontsize=7, fontweight="bold", color="white", zorder=6)
+
+        # Goal marker (star)
+        ax.plot(gc, gr, marker="*", markersize=18, color=color,
+                markeredgecolor="black", markeredgewidth=1.0, zorder=5)
+        ax.text(gc + 0.5, gr, f"G{rid}", ha="left", va="center",
+                fontsize=7, fontweight="bold", color=color, zorder=6)
+
+    # Dynamic obstacle label
+    if grid.dynamic_obstacles:
+        ax.plot([], [], marker="s", color=_DYNAMIC, linestyle="None",
+                markersize=8, label=f"Dynamic obs ({len(grid.dynamic_obstacles)})")
+
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_title(title, fontsize=13, fontweight="bold")
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved multi-robot grid to {save_path}")
+    if show:
+        plt.show()
+    return fig
+
+
+def draw_candidate_paths(
+    grid: Grid,
+    all_candidates: Dict[int, List[Dict]],
+    title: str = "Candidate Paths per Robot",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Draw a panel per robot showing all K candidate paths overlaid.
+    Used to visualize what QAOA is choosing from.
+    """
+    rids = sorted(all_candidates.keys())
+    n = len(rids)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 7))
+    if n == 1:
+        axes = [axes]
+
+    variant_colors = ["#3399FF", "#FF9933", "#33CC99", "#FF3366", "#9966FF"]
+
+    for ax, rid in zip(axes, rids):
+        # Base grid
+        img = np.ones((grid.size, grid.size, 3), dtype=np.float32)
+        for r in range(grid.size):
+            for c in range(grid.size):
+                if grid.grid[r, c] == 1:
+                    img[r, c] = _STATIC
+        ax.imshow(img, origin="upper", interpolation="nearest")
+
+        # Grid lines
+        ax.set_xticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.grid(which="minor", color="grey", linewidth=0.2)
+        ax.tick_params(which="minor", size=0)
+        ax.set_xticks(np.arange(0, grid.size, 5))
+        ax.set_yticks(np.arange(0, grid.size, 5))
+
+        # Draw each candidate path
+        for k, cand in enumerate(all_candidates[rid]):
+            path = cand["path"]
+            color = variant_colors[k % len(variant_colors)]
+            if len(path) >= 2:
+                cols = [p[1] for p in path]
+                rows = [p[0] for p in path]
+                ax.plot(cols, rows, color=color, linewidth=2.0, alpha=0.7,
+                        label=f"{cand['variant']} (cost={cand['cost']:.1f})")
+
+        # Start & Goal
+        cfg = [c for c in grid.robot_configs if c["id"] == rid][0]
+        sr, sc = cfg["start"]
+        gr, gc = cfg["goal"]
+        robot_color = ROBOT_COLORS[rid % len(ROBOT_COLORS)]
+        ax.plot(sc, sr, marker="o", markersize=14, color=robot_color,
+                markeredgecolor="black", markeredgewidth=1.5, zorder=5)
+        ax.plot(gc, gr, marker="*", markersize=18, color=robot_color,
+                markeredgecolor="black", markeredgewidth=1.0, zorder=5)
+
+        ax.legend(loc="upper right", fontsize=8)
+        ax.set_title(f"Robot {rid}  ({len(all_candidates[rid])} candidates)",
+                      fontsize=11, fontweight="bold")
+
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved candidate paths to {save_path}")
+    return fig
+
+
+def draw_simulation_gif(
+    grid: Grid,
+    simulation_result,
+    save_path: str,
+    fps: int = 4,
+    title: str = "Multi-Robot Simulation",
+) -> None:
+    """
+    Animated GIF showing all robots moving simultaneously with
+    dynamic obstacles.
+
+    Parameters
+    ----------
+    grid : Grid
+    simulation_result : SimulationResult (from dynamic_env.py)
+    save_path : str    (must end with .gif)
+    fps : int
+    title : str
+    """
+    try:
+        from matplotlib.animation import FuncAnimation, PillowWriter
+    except ImportError:
+        print("[visualize] Could not import animation — skipping GIF.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    snapshots = simulation_result.ticks
+
+    # Base image (static obstacles only)
+    base_img = np.ones((grid.size, grid.size, 3), dtype=np.float32)
+    for r in range(grid.size):
+        for c in range(grid.size):
+            if grid.grid[r, c] == 1:
+                base_img[r, c] = _STATIC
+
+    im_obj = ax.imshow(base_img, origin="upper", interpolation="nearest")
+    ax.set_xticks(np.arange(-0.5, grid.size, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, grid.size, 1), minor=True)
+    ax.grid(which="minor", color="grey", linewidth=0.2)
+    ax.tick_params(which="minor", size=0)
+    ax.set_xticks(np.arange(0, grid.size, 5))
+    ax.set_yticks(np.arange(0, grid.size, 5))
+
+    # Start/Goal markers for all robots
+    for cfg in grid.robot_configs:
+        rid = cfg["id"]
+        color = ROBOT_COLORS[rid % len(ROBOT_COLORS)]
+        sr, sc = cfg["start"]
+        gr, gc = cfg["goal"]
+        ax.plot(sc, sr, marker="o", markersize=10, color=color,
+                markeredgecolor="black", markeredgewidth=1, zorder=4, alpha=0.5)
+        ax.plot(gc, gr, marker="*", markersize=14, color=color,
+                markeredgecolor="black", markeredgewidth=0.8, zorder=4, alpha=0.5)
+
+    # Robot dots (animated)
+    robot_dots = {}
+    for cfg in grid.robot_configs:
+        rid = cfg["id"]
+        color = ROBOT_COLORS[rid % len(ROBOT_COLORS)]
+        dot, = ax.plot([], [], marker="o", markersize=14, color=color,
+                       markeredgecolor="white", markeredgewidth=2, zorder=6)
+        robot_dots[rid] = dot
+
+    title_text = ax.set_title(title, fontsize=12, fontweight="bold")
+
+    def _update(frame_idx):
+        if frame_idx >= len(snapshots):
+            return list(robot_dots.values()) + [im_obj]
+
+        snap = snapshots[frame_idx]
+
+        # Update image with dynamic obstacles
+        frame_img = base_img.copy()
+        for dpos in snap.dynamic_obstacle_positions:
+            dr, dc = dpos
+            if 0 <= dr < grid.size and 0 <= dc < grid.size:
+                frame_img[dr, dc] = _DYNAMIC
+        im_obj.set_data(frame_img)
+
+        # Update robot positions
+        for rs in snap.robot_states:
+            rid = rs.id
+            r, c = rs.pos
+            robot_dots[rid].set_data([c], [r])
+
+        # Show collisions in title
+        n_col = len(snap.collisions)
+        col_str = f"  [COLLISION x{n_col}]" if n_col > 0 else ""
+        title_text.set_text(f"{title}  —  Tick {snap.tick}{col_str}")
+
+        return list(robot_dots.values()) + [im_obj]
+
+    anim = FuncAnimation(fig, _update, frames=len(snapshots),
+                         interval=1000 // fps, blit=True)
+    anim.save(save_path, writer=PillowWriter(fps=fps))
+    plt.close(fig)
+    print(f"[visualize] Saved simulation GIF to {save_path}")
+
+
+def draw_selection_comparison(
+    grid: Grid,
+    all_candidates: Dict[int, List[Dict]],
+    selections: Dict[str, Dict[int, int]],
+    eval_results: Dict[str, Dict],
+    title: str = "Path Selection Comparison",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Side-by-side panels comparing different selection methods
+    (greedy, random, brute-force, QAOA).
+
+    Parameters
+    ----------
+    selections : dict
+        method_name → {robot_id: candidate_index}
+    eval_results : dict
+        method_name → output of evaluate_selection()
+    """
+    methods = list(selections.keys())
+    n = len(methods)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 7))
+    if n == 1:
+        axes = [axes]
+
+    for ax, method in zip(axes, methods):
+        sel = selections[method]
+        ev = eval_results[method]
+
+        # Base grid
+        img = np.ones((grid.size, grid.size, 3), dtype=np.float32)
+        for r in range(grid.size):
+            for c in range(grid.size):
+                if grid.grid[r, c] == 1:
+                    img[r, c] = _STATIC
+        for obs in grid.dynamic_obstacles:
+            pr, pc = obs["pos"]
+            if 0 <= pr < grid.size and 0 <= pc < grid.size:
+                img[pr, pc] = _DYNAMIC
+        ax.imshow(img, origin="upper", interpolation="nearest")
+
+        ax.set_xticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.grid(which="minor", color="grey", linewidth=0.2)
+        ax.tick_params(which="minor", size=0)
+        ax.set_xticks(np.arange(0, grid.size, 5))
+        ax.set_yticks(np.arange(0, grid.size, 5))
+
+        # Draw selected path for each robot
+        for cfg in grid.robot_configs:
+            rid = cfg["id"]
+            color = ROBOT_COLORS[rid % len(ROBOT_COLORS)]
+            cand_idx = sel[rid]
+            path = all_candidates[rid][cand_idx]["path"]
+
+            if len(path) >= 2:
+                cols = [p[1] for p in path]
+                rows = [p[0] for p in path]
+                ax.plot(cols, rows, color=color, linewidth=2.5, alpha=0.8,
+                        label=f"R{rid}")
+
+            sr, sc = cfg["start"]
+            gr, gc = cfg["goal"]
+            ax.plot(sc, sr, marker="o", markersize=12, color=color,
+                    markeredgecolor="black", markeredgewidth=1.2, zorder=5)
+            ax.plot(gc, gr, marker="*", markersize=16, color=color,
+                    markeredgecolor="black", markeredgewidth=0.8, zorder=5)
+
+        ax.legend(loc="upper right", fontsize=8)
+        subtitle = (f"{method}\n"
+                    f"Cost: {ev['total_cost']:.1f}  |  "
+                    f"Conflicts: {ev['total_conflicts']}  |  "
+                    f"Score: {ev['score']:.1f}")
+        ax.set_title(subtitle, fontsize=10, fontweight="bold")
+
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved selection comparison to {save_path}")
     return fig
