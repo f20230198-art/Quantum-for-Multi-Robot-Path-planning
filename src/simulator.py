@@ -59,6 +59,8 @@ except ImportError:
 
 from grid import Grid, Position
 from a_star import a_star, euclidean
+from apf import apf_plan
+from q_learning import train_q_learning, q_learning_plan, ACTIONS
 
 # ──────────────────────────────────────────────────────────────────
 # Colours
@@ -107,6 +109,10 @@ ROBOT_GHOST_COLORS = [
 # Robot agent (each robot is an independent agent)
 # ──────────────────────────────────────────────────────────────────
 
+# Supported planners for the interactive simulator
+PLANNER_NAMES = ["A*", "APF", "Q-Learning"]
+
+
 class RobotAgent:
     """
     An individual robot that moves toward its goal and can re-plan
@@ -126,11 +132,17 @@ class RobotAgent:
         self.replan_count = 0              # how many times path was re-computed
         self.total_steps = 0
         self.collisions = 0
+        self.q_table = None                # pre-trained Q-table (for QL planner)
 
-    def plan(self, grid, other_robot_positions=None):
+    def plan(self, grid, other_robot_positions=None, planner="A*"):
         """
-        Compute a path from current position to goal using A*.
+        Compute a path from current position to goal.
         The grid is the LIVE grid (with current obstacle state).
+
+        planner : str
+            'A*'         — A* global search (default)
+            'APF'        — Artificial Potential Field local planner
+            'Q-Learning' — Greedy policy from pre-trained Q-table
         """
         # Temporarily mark other robots as obstacles to avoid them
         blocked = set()
@@ -140,19 +152,63 @@ class RobotAgent:
                     grid.grid[p[0], p[1]] = 1
                     blocked.add(p)
 
-        result = a_star(grid, start=self.pos, goal=self.goal, eight_connected=True)
+        success = False
+
+        if planner == "APF":
+            result = apf_plan(
+                grid, start=self.pos, goal=self.goal,
+                max_steps=200, eight_connected=True,
+                k_rep=50.0, influence_radius=2.5,
+            )
+            # Use partial path even if APF got stuck — the robot
+            # makes progress and replans from the new position next tick
+            if result.path and len(result.path) > 1:
+                self.path = result.path[1:]  # exclude current position
+                self.replan_count += 1
+                success = True
+            else:
+                self.path = []
+
+        elif planner == "Q-Learning":
+            if self.q_table is not None:
+                result = q_learning_plan(
+                    grid, self.q_table,
+                    start=self.pos, goal=self.goal,
+                    max_steps=200,
+                )
+                # Use partial path even if Q-learning didn't reach goal
+                if result.path and len(result.path) > 1:
+                    self.path = result.path[1:]
+                    self.replan_count += 1
+                    success = True
+                else:
+                    self.path = []
+            else:
+                # Fallback to A* if no Q-table
+                result = a_star(grid, start=self.pos, goal=self.goal,
+                                eight_connected=True)
+                if result.success:
+                    self.path = result.path[1:]
+                    self.replan_count += 1
+                    success = True
+                else:
+                    self.path = []
+
+        else:  # Default: A*
+            result = a_star(grid, start=self.pos, goal=self.goal,
+                            eight_connected=True)
+            if result.success:
+                self.path = result.path[1:]
+                self.replan_count += 1
+                success = True
+            else:
+                self.path = []
 
         # Unblock
         for p in blocked:
             grid.grid[p[0], p[1]] = 0
 
-        if result.success:
-            self.path = result.path[1:]    # exclude current position
-            self.replan_count += 1
-            return True
-        else:
-            self.path = []
-            return False
+        return success
 
     def next_desired_pos(self):
         """What cell does the robot WANT to move to next?"""
@@ -261,6 +317,10 @@ class RealtimeSimulator:
         self.total_replans = 0
         self.log_lines = []
 
+        # Planner selection
+        self.planner_idx = 0
+        self.planner_name = PLANNER_NAMES[0]
+
         # Mouse state for obstacle interaction
         self.dragging_obs_idx = None
 
@@ -268,6 +328,7 @@ class RealtimeSimulator:
         self._log("Simulation ready. Press SPACE to start.")
         self._log("Left-click to place walls.")
         self._log("Middle-click to spawn moving obstacles.")
+        self._log(f"Planner: {self.planner_name} (press P to cycle)")
         self._initial_plan()
 
     # ──────────────────────────────────────────────────────────
@@ -276,14 +337,33 @@ class RealtimeSimulator:
 
     def _initial_plan(self):
         """Plan paths for all robots at the start."""
+        # Pre-train Q-tables if needed
+        if self.planner_name == "Q-Learning":
+            self._train_q_tables()
+
         other_positions = []
         for agent in self.robots:
-            success = agent.plan(self.grid, other_positions)
+            success = agent.plan(self.grid, other_positions,
+                                planner=self.planner_name)
             if success:
                 self._log(f"R{agent.rid}: planned ({len(agent.path)} steps)")
                 other_positions.append(agent.pos)
             else:
                 self._log(f"R{agent.rid}: NO PATH FOUND!")
+
+    def _train_q_tables(self):
+        """Train Q-tables for all robots (called when switching to QL planner)."""
+        self._log("Training Q-tables (500 episodes per robot)...")
+        for agent in self.robots:
+            q_table, _ = train_q_learning(
+                self.grid,
+                start=agent.start,
+                goal=agent.goal,
+                episodes=500,
+                seed=42 + agent.rid,
+            )
+            agent.q_table = q_table
+        self._log("Q-tables trained.")
 
     def _replan_if_needed(self):
         """Check every robot and re-plan those that need it."""
@@ -297,7 +377,8 @@ class RealtimeSimulator:
                 other_pos = [a.pos for a in self.robots
                              if a.rid != agent.rid and not a.reached_goal]
                 old_count = agent.replan_count
-                success = agent.plan(self.grid, other_pos)
+                success = agent.plan(self.grid, other_pos,
+                                     planner=self.planner_name)
                 if success and agent.replan_count > old_count:
                     self.total_replans += 1
                     self._log(f"R{agent.rid}: REPLANNED ({len(agent.path)} steps)")
@@ -526,7 +607,24 @@ class RealtimeSimulator:
             self.show_ghost = not self.show_ghost
         elif key == pygame.K_t:
             self.show_trail = not self.show_trail
+        elif key == pygame.K_p:
+            self._cycle_planner()
         return True
+
+    def _cycle_planner(self):
+        """Cycle through available planners."""
+        self.planner_idx = (self.planner_idx + 1) % len(PLANNER_NAMES)
+        self.planner_name = PLANNER_NAMES[self.planner_idx]
+        self._log(f"Switched planner to: {self.planner_name}")
+        # Re-train Q-tables if switching to QL
+        if self.planner_name == "Q-Learning":
+            self._train_q_tables()
+        # Re-plan all active robots with new planner
+        for agent in self.robots:
+            if not agent.reached_goal:
+                other_pos = [a.pos for a in self.robots
+                             if a.rid != agent.rid and not a.reached_goal]
+                agent.plan(self.grid, other_pos, planner=self.planner_name)
 
     def _reset(self):
         self.grid = copy.deepcopy(self.base_grid)
@@ -701,6 +799,7 @@ class RealtimeSimulator:
         else:
             status, scol = "RUNNING", GREEN
         screen.blit(font_bold.render(f"Status: {status}", True, scol), (x0, y)); y += 20
+        screen.blit(font_bold.render(f"Planner: {self.planner_name}", True, (0, 100, 180)), (x0, y)); y += 20
         screen.blit(font.render(f"Tick: {self.tick}", True, BLACK), (x0, y)); y += 18
         screen.blit(font.render(f"Speed: {self.ticks_per_sec:.1f} t/s", True, BLACK), (x0, y)); y += 18
         screen.blit(font.render(f"Replans: {self.total_replans}", True, (0, 100, 180)), (x0, y)); y += 18
@@ -742,6 +841,7 @@ class RealtimeSimulator:
             ("RIGHT",       "Step (paused)"),
             ("UP / DOWN",   "Speed up / down"),
             ("R",           "Reset all"),
+            ("P",           "Cycle planner"),
             ("G",           "Ghost paths on/off"),
             ("T",           "Trails on/off"),
             ("L-Click",     "Place / remove wall"),

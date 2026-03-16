@@ -34,7 +34,6 @@ matplotlib.use("Agg")
 
 # Make sure Python can find our src/ modules when run from project root
 sys.path.insert(0, os.path.dirname(__file__))
-
 from grid import Grid
 from a_star import a_star, euclidean
 from visualize import (draw_grid, draw_search_steps, draw_robot_walk_gif,
@@ -45,6 +44,10 @@ from multi_robot import (generate_candidate_paths, prepare_qaoa_input,
                          greedy_select, random_select, brute_force_select,
                          evaluate_selection)
 from dynamic_env import Simulation
+from apf import apf_plan
+from q_learning import q_learning_full
+
+import matplotlib.pyplot as plt
 
 
 def main():
@@ -263,20 +266,125 @@ def main():
     print("\n" + "=" * 60)
     print("  PHASE 1 COMPLETE — ALL OUTPUTS SAVED")
     print("=" * 60)
-    print("  Files generated:")
-    print("    • week1_demo.png                  — A* on random grid")
-    print("    • week1_search_steps.png          — A* step-by-step")
-    print("    • week1_robot_walk.gif            — Single robot animation")
-    print("    • week1_comparison.png            — A* vs Greedy BFS")
-    print("    • week1_trap_u-shape.png          — Trap scenario")
-    print("    • week1_narrow_passage.png        — Narrow passage")
-    print("    • phase1_environment.png          — Multi-robot grid")
-    print("    • phase1_candidate_paths.png      — K candidate paths/robot")
-    print("    • phase1_selection_comparison.png  — Greedy vs Random vs BF")
-    print("    • phase1_bruteforce_paths.png     — Best classical selection")
-    print("    • phase1_simulation.gif           — Animated simulation")
-    print("\n  Next: Phase 2 — QAOA quantum optimizer (qaoa_optimizer.py)")
+
+    # ==============================================================
+    #  PHASE 2 — APF & Q-Learning Local Planners
+    # ==============================================================
+
+    print("\n" + "=" * 60)
+    print("  PHASE 2 — APF & Q-Learning Local Planners")
+    print("=" * 60)
+
+    # ---- 17. APF on U-shaped trap (demonstrates local minimum) ----
+    print("\n[APF]  Running APF on U-shaped trap environment...")
+    trap_env = Grid.create_trap_environment(size=20)
+
+    t0 = time.perf_counter()
+    apf_result = apf_plan(trap_env)
+    apf_ms = (time.perf_counter() - t0) * 1000
+    print(f"[APF]  {apf_result}")
+    print(f"[APF]  Time: {apf_ms:.2f} ms")
+
+    # Save APF trap result
+    draw_grid(
+        trap_env,
+        paths=[apf_result.path] if apf_result.path else None,
+        path_colors=["#FF6633"],
+        title=f"APF on U-Trap  –  {'STUCK!' if apf_result.stuck else 'OK'}  "
+              f"(steps={apf_result.steps_taken})",
+        save_path=os.path.join(save_dir, "phase2_apf_trap.png"),
+        show=False,
+    )
+
+    # Also run A* on the same trap for comparison
+    astar_trap = a_star(trap_env)
+    print(f"[A*]   A* on same trap: cost={astar_trap.cost:.2f} "
+          f"(expanded {astar_trap.nodes_expanded} nodes)")
+
+    # ---- 18. Q-Learning on U-shaped trap ----
+    print("\n[QL]   Training Q-learning on U-shaped trap (500 episodes)...")
+    t0 = time.perf_counter()
+    ql_result = q_learning_full(
+        trap_env,
+        episodes=500,
+        seed=42,
+    )
+    ql_ms = (time.perf_counter() - t0) * 1000
+    print(f"[QL]   {ql_result}")
+    print(f"[QL]   Time: {ql_ms:.2f} ms (training + planning)")
+
+    # Save Q-learning trap result
+    draw_grid(
+        trap_env,
+        paths=[ql_result.path] if ql_result.path else None,
+        path_colors=["#33CC66"],
+        title=f"Q-Learning on U-Trap  –  "
+              f"{'SUCCESS' if ql_result.success else 'FAIL'}  "
+              f"(episodes={ql_result.episodes_trained})",
+        save_path=os.path.join(save_dir, "phase2_qlearning_trap.png"),
+        show=False,
+    )
+
+    # ---- 19. Three-way comparison on a standard dynamic grid ----
+    print("\n[compare]  Running all 3 planners on a standard grid...")
+    compare_grid = Grid(size=20, obstacle_ratio=0.15, seed=12345)
+    compare_grid.add_dynamic_obstacle((10, 5), direction=(0, 1), pattern="bounce")
+    compare_grid.add_dynamic_obstacle((5, 10), direction=(1, 0), pattern="bounce")
+    compare_grid.add_dynamic_obstacle((15, 15), direction=(0, -1), pattern="bounce")
+
+    # A*
+    astar_cmp = a_star(compare_grid)
+    # APF
+    apf_cmp = apf_plan(compare_grid)
+    # Q-Learning
+    ql_cmp = q_learning_full(compare_grid, episodes=500, seed=42)
+
+    print(f"  {'Algorithm':<20s}  {'Success':<10s}  {'Cost':<10s}  {'Steps/Expanded'}")
+    print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*15}")
+    print(f"  {'A*':<20s}  {'✓' if astar_cmp.success else '✗':<10s}  "
+          f"{astar_cmp.cost:<10.2f}  {astar_cmp.nodes_expanded}")
+    print(f"  {'APF':<20s}  {'✓' if apf_cmp.success else '✗':<10s}  "
+          f"{apf_cmp.cost:<10.2f}  {apf_cmp.steps_taken}")
+    print(f"  {'Q-Learning':<20s}  {'✓' if ql_cmp.success else '✗':<10s}  "
+          f"{ql_cmp.cost:<10.2f}  {ql_cmp.episodes_trained} ep")
+
+    # Comparison image
+    fig, axes = plt.subplots(1, 3, figsize=(21, 7))
+    planners = [
+        ("A* (Global Optimal)", astar_cmp.path, "#3399FF",
+         f"cost={astar_cmp.cost:.1f}, expanded={astar_cmp.nodes_expanded}"),
+        ("APF (Local Reactive)", apf_cmp.path, "#FF6633",
+         f"{'STUCK' if apf_cmp.stuck else f'cost={apf_cmp.cost:.1f}'}, "
+         f"steps={apf_cmp.steps_taken}"),
+        ("Q-Learning (RL Baseline)", ql_cmp.path, "#33CC66",
+         f"{'OK' if ql_cmp.success else 'FAIL'}, "
+         f"cost={ql_cmp.cost:.1f}, ep={ql_cmp.episodes_trained}"),
+    ]
+    for ax, (name, path, color, info) in zip(axes, planners):
+        draw_grid(compare_grid, paths=[path] if path else None,
+                  path_colors=[color], title=f"{name}\n{info}",
+                  show=False, ax=ax)
+
+    fig.suptitle("Phase 2 — Planner Comparison (A* vs APF vs Q-Learning)",
+                 fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+    cmp_path = os.path.join(save_dir, "phase2_planner_comparison.png")
+    fig.savefig(cmp_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"\n[visualize] Saved planner comparison to {cmp_path}")
+
+    # ---- 20. Summary ----
+    print("\n" + "=" * 60)
+    print("  PHASE 2 COMPLETE — ALL OUTPUTS SAVED")
+    print("=" * 60)
+    print("  New files generated:")
+    print("    • phase2_apf_trap.png             — APF stuck in U-trap")
+    print("    • phase2_qlearning_trap.png        — Q-Learning on U-trap")
+    print("    • phase2_planner_comparison.png    — A* vs APF vs Q-Learning")
+    print("\n  All previous outputs (Week 1 + Phase 1) also regenerated.")
+    print("\n  Next: Phase 3 — Quantum Q-Learning + Hybrid Planner")
 
 
 if __name__ == "__main__":
     main()
+
