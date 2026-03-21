@@ -23,7 +23,8 @@ HOW IT WORKS:
 """
 
 import numpy as np
-from typing import List, Tuple, Optional
+import copy
+from typing import List, Tuple, Optional, Dict
 
 # Type alias for a grid position  (row, col)
 Position = Tuple[int, int]
@@ -101,8 +102,12 @@ class Grid:
         # Build the grid
         self.grid = self._generate_grid()
 
-        # Dynamic obstacles list (populated in Week 2)
+        # Dynamic obstacles list
         self.dynamic_obstacles: List[dict] = []
+
+        # Multiple robot start/goal pairs (for multi-robot scenarios)
+        # Each entry: {"id": int, "start": Position, "goal": Position}
+        self.robot_configs: List[Dict] = []
 
     # ------------------------------------------------------------------
     # Grid generation
@@ -197,6 +202,190 @@ class Grid:
         return positions
 
     # ------------------------------------------------------------------
+    # Dynamic obstacle management
+    # ------------------------------------------------------------------
+
+    def add_dynamic_obstacle(
+        self,
+        pos: Position,
+        direction: Tuple[int, int] = (0, 1),
+        speed: int = 1,
+        pattern: str = "bounce",
+    ) -> None:
+        """
+        Add a moving obstacle to the grid.
+
+        Parameters
+        ----------
+        pos : Position
+            Initial (row, col).
+        direction : tuple
+            Movement direction (dr, dc), e.g. (0,1)=right, (1,0)=down.
+        speed : int
+            Cells per timestep (usually 1).
+        pattern : str
+            'bounce' — reverses direction at walls.
+            'loop'   — wraps around the grid edges.
+        """
+        self.dynamic_obstacles.append({
+            "pos": list(pos),
+            "direction": list(direction),
+            "speed": speed,
+            "pattern": pattern,
+        })
+
+    def step_dynamic_obstacles(self) -> None:
+        """
+        Advance all dynamic obstacles by one timestep.
+
+        Bounce pattern: reverse direction when hitting a wall or grid edge.
+        Loop pattern:  wrap around to the opposite side.
+        """
+        for obs in self.dynamic_obstacles:
+            r, c = obs["pos"]
+            dr, dc = obs["direction"]
+            nr, nc = r + dr * obs["speed"], c + dc * obs["speed"]
+
+            if obs["pattern"] == "bounce":
+                # Reverse if next position is out-of-bounds or a static wall
+                if not (0 <= nr < self.size and 0 <= nc < self.size) or \
+                   self.grid[nr, nc] == 1:
+                    obs["direction"] = [-dr, -dc]
+                    nr, nc = r + (-dr) * obs["speed"], c + (-dc) * obs["speed"]
+                    # If reverse is also blocked, stay put
+                    if not (0 <= nr < self.size and 0 <= nc < self.size) or \
+                       self.grid[nr, nc] == 1:
+                        nr, nc = r, c
+            elif obs["pattern"] == "loop":
+                nr = nr % self.size
+                nc = nc % self.size
+                # Skip if wrapped into a static wall
+                if self.grid[nr, nc] == 1:
+                    nr, nc = r, c
+
+            obs["pos"] = [nr, nc]
+
+    def get_dynamic_obstacle_positions(self) -> List[Position]:
+        """Return current positions of all dynamic obstacles."""
+        return [tuple(obs["pos"]) for obs in self.dynamic_obstacles]
+
+    def snapshot(self) -> np.ndarray:
+        """
+        Return a 2-D array where 0=free, 1=static obstacle,
+        2=dynamic obstacle.  Useful for visualization and
+        collision checking at a single point in time.
+        """
+        s = self.grid.copy()
+        for obs in self.dynamic_obstacles:
+            r, c = obs["pos"]
+            if 0 <= r < self.size and 0 <= c < self.size:
+                s[r, c] = 2
+        return s
+
+    def is_free_at_time(self, pos: Position, dynamic_positions: List[Position]) -> bool:
+        """
+        Check if *pos* is free considering a specific set of dynamic
+        obstacle positions (used when simulating future timesteps).
+        """
+        r, c = pos
+        if not (0 <= r < self.size and 0 <= c < self.size):
+            return False
+        if self.grid[r, c] == 1:
+            return False
+        if pos in dynamic_positions:
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Multi-robot environment factories
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def create_multi_robot_env(
+        cls,
+        size: int = 20,
+        obstacle_ratio: float = 0.12,
+        num_robots: int = 3,
+        num_dynamic: int = 4,
+        seed: int = 42,
+    ) -> "Grid":
+        """
+        Create an environment with multiple robots and dynamic obstacles.
+
+        Robot start/goal pairs are placed in different corners / edges
+        so that their paths are likely to conflict — this is where QAOA
+        adds value.
+
+        Parameters
+        ----------
+        size : int
+            Grid dimensions (size x size).
+        obstacle_ratio : float
+            Fraction of cells that are static walls.
+        num_robots : int
+            Number of robots (2–5 supported).
+        num_dynamic : int
+            Number of moving obstacles.
+        seed : int
+            Random seed.
+        """
+        # Pre-defined start/goal positions that force path conflicts
+        # (robots must cross each other's natural routes)
+        presets = [
+            {"start": (0,          0),           "goal": (size-1, size-1)},  # top-left  → bottom-right
+            {"start": (0,          size-1),      "goal": (size-1, 0)},       # top-right → bottom-left
+            {"start": (size-1,     0),           "goal": (0,      size-1)},  # bottom-left → top-right
+            {"start": (size-1,     size-1),      "goal": (0,      0)},       # bottom-right → top-left
+            {"start": (size//2,    0),           "goal": (size//2, size-1)},  # mid-left → mid-right
+        ]
+
+        # Use first robot's start/goal as the grid's default
+        g = cls(
+            size=size,
+            obstacle_ratio=obstacle_ratio,
+            start=presets[0]["start"],
+            goal=presets[0]["goal"],
+            seed=seed,
+        )
+
+        # Make sure all robot start/goal cells are free
+        for i in range(min(num_robots, len(presets))):
+            sr, sc = presets[i]["start"]
+            gr, gc = presets[i]["goal"]
+            g.grid[sr, sc] = 0
+            g.grid[gr, gc] = 0
+
+        # Store robot configurations
+        g.robot_configs = []
+        for i in range(min(num_robots, len(presets))):
+            g.robot_configs.append({
+                "id": i,
+                "start": presets[i]["start"],
+                "goal": presets[i]["goal"],
+            })
+
+        # Add dynamic obstacles in the middle region
+        rng = np.random.RandomState(seed + 100)
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        mid = size // 2
+        placed = 0
+        attempts = 0
+        while placed < num_dynamic and attempts < 200:
+            r = rng.randint(mid - size // 4, mid + size // 4)
+            c = rng.randint(mid - size // 4, mid + size // 4)
+            attempts += 1
+            if g.grid[r, c] == 0 and (r, c) not in [
+                cfg["start"] for cfg in g.robot_configs
+            ] and (r, c) not in [
+                cfg["goal"] for cfg in g.robot_configs
+            ]:
+                d = directions[rng.randint(0, len(directions))]
+                g.add_dynamic_obstacle((r, c), direction=d, pattern="bounce")
+                placed += 1
+
+        return g
+
+    # ------------------------------------------------------------------
     # Pre-built scenario grids (used in experiments later)
     # ------------------------------------------------------------------
     @classmethod
@@ -225,6 +414,139 @@ class Grid:
         g.goal = (mid, mid)
         g.start = (1, 1)
         return g
+
+    @classmethod
+    def create_varied_obstacles(
+        cls,
+        size: int = 20,
+        obstacle_ratio: float = 0.15,
+        seed: Optional[int] = None,
+        start: Optional[Position] = None,
+        goal: Optional[Position] = None,
+    ) -> "Grid":
+        """
+        Create a grid with obstacles of VARYING sizes and shapes,
+        mimicking a more realistic environment (rooms, furniture,
+        walls of different lengths).
+
+        Instead of scattering individual 1×1 cells, this places a mix of:
+            • 1×1 small debris
+            • 2×2 and 3×3 square blocks (furniture / pillars)
+            • Horizontal/vertical walls of random length (2–5 cells)
+            • L-shaped obstacles
+
+        Parameters
+        ----------
+        size : int
+            Grid dimensions.
+        obstacle_ratio : float
+            Approximate fraction of cells that become obstacles.
+        seed : int or None
+        start, goal : Position or None
+        """
+        s = start if start is not None else (0, 0)
+        g_pos = goal if goal is not None else (size - 1, size - 1)
+        base = cls(size=size, obstacle_ratio=0.0, start=s, goal=g_pos, seed=seed)
+        rng = np.random.RandomState(seed)
+
+        target_cells = int(size * size * obstacle_ratio)
+        filled = 0
+
+        # Keep start/goal and their immediate neighbours free
+        protected = {s, g_pos}
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                protected.add((s[0] + dr, s[1] + dc))
+                protected.add((g_pos[0] + dr, g_pos[1] + dc))
+
+        # Shape generators: each returns a list of (r, c) offsets
+        def _block(h, w):
+            return [(r, c) for r in range(h) for c in range(w)]
+
+        def _hwall(length):
+            return [(0, c) for c in range(length)]
+
+        def _vwall(length):
+            return [(r, 0) for r in range(length)]
+
+        def _lshape(arm1, arm2):
+            cells = [(r, 0) for r in range(arm1)]
+            cells += [(arm1 - 1, c) for c in range(1, arm2)]
+            return cells
+
+        shapes = [
+            ("1x1", lambda: _block(1, 1)),
+            ("1x1", lambda: _block(1, 1)),
+            ("2x2", lambda: _block(2, 2)),
+            ("3x3", lambda: _block(3, 3)),
+            ("hwall", lambda: _hwall(rng.randint(2, 6))),
+            ("vwall", lambda: _vwall(rng.randint(2, 6))),
+            ("L", lambda: _lshape(rng.randint(2, 4), rng.randint(2, 4))),
+        ]
+
+        max_attempts = target_cells * 10
+        attempt = 0
+        while filled < target_cells and attempt < max_attempts:
+            attempt += 1
+            # Pick a random shape
+            _, shape_fn = shapes[rng.randint(0, len(shapes))]
+            offsets = shape_fn()
+
+            # Pick a random anchor position
+            ar = rng.randint(0, size)
+            ac = rng.randint(0, size)
+
+            # Check all cells of this shape fit and don't hit protected
+            cells_to_place = []
+            ok = True
+            for dr, dc in offsets:
+                r, c = ar + dr, ac + dc
+                if not (0 <= r < size and 0 <= c < size):
+                    ok = False
+                    break
+                if (r, c) in protected:
+                    ok = False
+                    break
+                if base.grid[r, c] == 1:
+                    continue  # already obstacle, skip but don't fail
+                cells_to_place.append((r, c))
+            if not ok:
+                continue
+
+            for r, c in cells_to_place:
+                base.grid[r, c] = 1
+                filled += 1
+                if filled >= target_cells:
+                    break
+
+        # Verify connectivity — if blocked, clear a BFS corridor
+        if not base._is_reachable(base.grid):
+            # Fall back: clear obstacles along a simple path
+            from collections import deque
+            # BFS on the full grid ignoring obstacles to find shortest geometric path
+            visited = {}
+            queue = deque([base.start])
+            visited[base.start] = None
+            found = False
+            while queue and not found:
+                cur = queue.popleft()
+                if cur == base.goal:
+                    found = True
+                    break
+                r, c = cur
+                for dr, dc in cls.DIRECTIONS_8:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < size and 0 <= nc < size and (nr, nc) not in visited:
+                        visited[(nr, nc)] = cur
+                        queue.append((nr, nc))
+            # Clear the corridor
+            if found:
+                pos = base.goal
+                while pos is not None:
+                    base.grid[pos[0], pos[1]] = 0
+                    pos = visited.get(pos)
+
+        return base
 
     @classmethod
     def create_narrow_passage(cls, size: int = 20) -> "Grid":
