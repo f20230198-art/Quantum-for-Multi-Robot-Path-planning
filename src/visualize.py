@@ -861,3 +861,325 @@ def draw_selection_comparison(
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"[visualize] Saved selection comparison to {save_path}")
     return fig
+
+
+# ==================================================================
+# Phase 3 — Quantum Q-Learning & Hybrid Planner Visualization
+# ==================================================================
+
+def draw_quantum_comparison(
+    grid: Grid,
+    results: Dict[str, dict],
+    title: str = "Classical vs Quantum Q-Learning",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Side-by-side panels comparing planners on the same grid.
+
+    Parameters
+    ----------
+    grid : Grid
+    results : dict
+        Keys = planner name, Values = dict with keys:
+            'path': list of Position (or None)
+            'color': str (hex color)
+            'info': str (subtitle text)
+    title : str
+    save_path : str or None
+    """
+    n = len(results)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 7))
+    if n == 1:
+        axes = [axes]
+
+    for ax, (name, res) in zip(axes, results.items()):
+        # Base grid
+        img = np.ones((grid.size, grid.size, 3), dtype=np.float32)
+        for r in range(grid.size):
+            for c in range(grid.size):
+                if grid.grid[r, c] == 1:
+                    img[r, c] = _STATIC
+        for obs in grid.dynamic_obstacles:
+            pr, pc = obs["pos"]
+            if 0 <= pr < grid.size and 0 <= pc < grid.size:
+                img[pr, pc] = _DYNAMIC
+        ax.imshow(img, origin="upper", interpolation="nearest")
+
+        # Grid lines
+        ax.set_xticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.grid(which="minor", color="grey", linewidth=0.2)
+        ax.tick_params(which="minor", size=0)
+        ax.set_xticks(np.arange(0, grid.size, 5))
+        ax.set_yticks(np.arange(0, grid.size, 5))
+
+        # Path
+        path = res.get("path")
+        color = res.get("color", "#3399FF")
+        if path and len(path) >= 2:
+            cols = [p[1] for p in path]
+            rows = [p[0] for p in path]
+            ax.plot(cols, rows, color=color, linewidth=2.5, alpha=0.85)
+
+        # Start & Goal
+        sr, sc = grid.start
+        gr, gc = grid.goal
+        ax.plot(sc, sr, marker="o", markersize=12, color="limegreen",
+                markeredgecolor="black", markeredgewidth=1.2, zorder=5)
+        ax.plot(gc, gr, marker="*", markersize=16, color="red",
+                markeredgecolor="black", markeredgewidth=0.8, zorder=5)
+
+        info = res.get("info", "")
+        ax.set_title(f"{name}\n{info}", fontsize=11, fontweight="bold")
+
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved quantum comparison to {save_path}")
+    return fig
+
+
+def draw_learning_curves(
+    curves: Dict[str, List[float]],
+    title: str = "Training Reward Curves",
+    save_path: Optional[str] = None,
+    window: int = 20,
+) -> plt.Figure:
+    """
+    Plot smoothed learning curves (reward per episode) for
+    classical vs quantum Q-learning.
+
+    Parameters
+    ----------
+    curves : dict
+        Keys = label, Values = list of episode rewards.
+    title : str
+    save_path : str or None
+    window : int
+        Moving-average window for smoothing.
+    """
+    fig, ax = plt.subplots(figsize=(10, 5))
+    colors = ["#3399FF", "#FF6633", "#33CC66", "#CC33FF"]
+
+    for i, (label, rewards) in enumerate(curves.items()):
+        color = colors[i % len(colors)]
+        # Raw (faint)
+        ax.plot(rewards, alpha=0.15, color=color, linewidth=0.5)
+        # Smoothed
+        if len(rewards) >= window:
+            smoothed = np.convolve(rewards,
+                                   np.ones(window) / window,
+                                   mode="valid")
+            ax.plot(range(window - 1, len(rewards)),
+                    smoothed, color=color, linewidth=2, label=label)
+        else:
+            ax.plot(rewards, color=color, linewidth=2, label=label)
+
+    ax.set_xlabel("Episode", fontsize=11)
+    ax.set_ylabel("Total Reward", fontsize=11)
+    ax.set_title(title, fontsize=13, fontweight="bold")
+    ax.legend(fontsize=10)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved learning curves to {save_path}")
+    return fig
+
+
+# ==================================================================
+# Full Model Comparison — Bar Charts across obstacle densities
+# ==================================================================
+
+def draw_full_comparison(
+    comparison_data: Dict[str, Dict[str, dict]],
+    title: str = "All Planners — Performance vs Obstacle Density",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Draw a multi-panel bar chart comparing ALL planners across
+    different obstacle densities.
+
+    Parameters
+    ----------
+    comparison_data : dict
+        Structure:
+            { density_label: {
+                planner_name: {
+                    "cost": float,
+                    "success": bool,
+                    "time_ms": float,
+                    "steps": int,   # path length or steps taken
+                },
+                ...
+              },
+              ...
+            }
+    title : str
+    save_path : str or None
+    """
+    densities = list(comparison_data.keys())
+    # Collect all planner names (union across densities)
+    all_planners = []
+    for d in densities:
+        for p in comparison_data[d]:
+            if p not in all_planners:
+                all_planners.append(p)
+
+    planner_colors = {
+        "A*": "#3399FF",
+        "APF": "#FF6633",
+        "Classical QL": "#33CC66",
+        "Quantum QL": "#CC33FF",
+        "Hybrid": "#FF9933",
+    }
+    default_colors = ["#3399FF", "#FF6633", "#33CC66", "#CC33FF", "#FF9933",
+                      "#FFCC00", "#66CCCC"]
+
+    def _color(name):
+        return planner_colors.get(name,
+               default_colors[all_planners.index(name) % len(default_colors)])
+
+    n_densities = len(densities)
+    n_planners = len(all_planners)
+
+    fig, axes = plt.subplots(1, 3, figsize=(22, 7))
+
+    bar_width = 0.8 / n_planners
+    x = np.arange(n_densities)
+
+    # ---- Panel 1: Path Cost ----
+    ax1 = axes[0]
+    for i, pname in enumerate(all_planners):
+        costs = []
+        for d in densities:
+            info = comparison_data[d].get(pname, {})
+            c = info.get("cost", 0)
+            if not info.get("success", False):
+                c = 0
+            costs.append(c)
+        bars = ax1.bar(x + i * bar_width, costs, bar_width,
+                       label=pname, color=_color(pname), edgecolor="white")
+        # Mark failures with an X
+        for j, d in enumerate(densities):
+            info = comparison_data[d].get(pname, {})
+            if not info.get("success", False):
+                ax1.text(x[j] + i * bar_width, 1, "X",
+                         ha="center", va="bottom", fontsize=12,
+                         fontweight="bold", color="red")
+    ax1.set_xlabel("Obstacle Density", fontsize=11)
+    ax1.set_ylabel("Path Cost", fontsize=11)
+    ax1.set_title("Path Cost (lower = better)\nX = failed", fontsize=12, fontweight="bold")
+    ax1.set_xticks(x + bar_width * (n_planners - 1) / 2)
+    ax1.set_xticklabels(densities, fontsize=10)
+    ax1.legend(fontsize=9)
+    ax1.grid(axis="y", alpha=0.3)
+
+    # ---- Panel 2: Computation Time ----
+    ax2 = axes[1]
+    for i, pname in enumerate(all_planners):
+        times = []
+        for d in densities:
+            info = comparison_data[d].get(pname, {})
+            times.append(info.get("time_ms", 0))
+        ax2.bar(x + i * bar_width, times, bar_width,
+                label=pname, color=_color(pname), edgecolor="white")
+    ax2.set_xlabel("Obstacle Density", fontsize=11)
+    ax2.set_ylabel("Time (ms)", fontsize=11)
+    ax2.set_title("Computation Time", fontsize=12, fontweight="bold")
+    ax2.set_xticks(x + bar_width * (n_planners - 1) / 2)
+    ax2.set_xticklabels(densities, fontsize=10)
+    ax2.legend(fontsize=9)
+    ax2.grid(axis="y", alpha=0.3)
+
+    # ---- Panel 3: Path Length (steps) ----
+    ax3 = axes[2]
+    for i, pname in enumerate(all_planners):
+        steps = []
+        for d in densities:
+            info = comparison_data[d].get(pname, {})
+            s = info.get("steps", 0)
+            if not info.get("success", False):
+                s = 0
+            steps.append(s)
+        bars = ax3.bar(x + i * bar_width, steps, bar_width,
+                       label=pname, color=_color(pname), edgecolor="white")
+        for j, d in enumerate(densities):
+            info = comparison_data[d].get(pname, {})
+            if not info.get("success", False):
+                ax3.text(x[j] + i * bar_width, 1, "X",
+                         ha="center", va="bottom", fontsize=12,
+                         fontweight="bold", color="red")
+    ax3.set_xlabel("Obstacle Density", fontsize=11)
+    ax3.set_ylabel("Path Length (cells)", fontsize=11)
+    ax3.set_title("Path Length (lower = better)\nX = failed", fontsize=12, fontweight="bold")
+    ax3.set_xticks(x + bar_width * (n_planners - 1) / 2)
+    ax3.set_xticklabels(densities, fontsize=10)
+    ax3.legend(fontsize=9)
+    ax3.grid(axis="y", alpha=0.3)
+
+    fig.suptitle(title, fontsize=15, fontweight="bold", y=1.03)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved full comparison to {save_path}")
+    return fig
+
+
+def draw_varied_obstacle_grids(
+    grids: Dict[str, "Grid"],
+    title: str = "Environments with Varying Obstacle Density",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Show side-by-side grid snapshots at different obstacle densities.
+
+    Parameters
+    ----------
+    grids : dict
+        density_label → Grid object
+    """
+    n = len(grids)
+    fig, axes = plt.subplots(1, n, figsize=(6 * n, 6))
+    if n == 1:
+        axes = [axes]
+
+    for ax, (label, grid) in zip(axes, grids.items()):
+        img = np.ones((grid.size, grid.size, 3), dtype=np.float32)
+        for r in range(grid.size):
+            for c in range(grid.size):
+                if grid.grid[r, c] == 1:
+                    img[r, c] = _STATIC
+        ax.imshow(img, origin="upper", interpolation="nearest")
+        ax.set_xticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.set_yticks(np.arange(-0.5, grid.size, 1), minor=True)
+        ax.grid(which="minor", color="grey", linewidth=0.2)
+        ax.tick_params(which="minor", size=0)
+        ax.set_xticks(np.arange(0, grid.size, 5))
+        ax.set_yticks(np.arange(0, grid.size, 5))
+
+        # Start & Goal
+        sr, sc = grid.start
+        gr, gc = grid.goal
+        ax.plot(sc, sr, marker="o", markersize=12, color="limegreen",
+                markeredgecolor="black", markeredgewidth=1.2, zorder=5)
+        ax.plot(gc, gr, marker="*", markersize=16, color="red",
+                markeredgecolor="black", markeredgewidth=0.8, zorder=5)
+
+        obs_count = int(np.sum(grid.grid == 1))
+        total = grid.size * grid.size
+        actual_pct = obs_count / total * 100
+        ax.set_title(f"{label}\n({obs_count} cells, {actual_pct:.0f}%)",
+                     fontsize=11, fontweight="bold")
+
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved varied obstacle grids to {save_path}")
+    return fig

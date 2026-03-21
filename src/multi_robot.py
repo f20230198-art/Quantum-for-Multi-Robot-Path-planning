@@ -36,6 +36,7 @@ import copy
 import itertools
 import numpy as np
 from typing import List, Tuple, Optional, Dict
+from utils import path_cost as _compute_path_cost
 
 from grid import Grid, Position
 from a_star import a_star, AStarResult, euclidean
@@ -143,15 +144,6 @@ def _create_penalty_grid(grid: Grid, rng: np.random.RandomState, intensity: int)
 
     return modified
 
-
-def _compute_path_cost(path: List[Position]) -> float:
-    """Compute the true Euclidean cost of a path."""
-    cost = 0.0
-    for i in range(len(path) - 1):
-        dr = abs(path[i][0] - path[i + 1][0])
-        dc = abs(path[i][1] - path[i + 1][1])
-        cost += math.sqrt(2) if (dr + dc == 2) else 1.0
-    return cost
 
 
 def _deduplicate(candidates: List[Dict]) -> List[Dict]:

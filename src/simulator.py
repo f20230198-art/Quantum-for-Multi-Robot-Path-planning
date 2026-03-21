@@ -61,6 +61,10 @@ from grid import Grid, Position
 from a_star import a_star, euclidean
 from apf import apf_plan
 from q_learning import train_q_learning, q_learning_plan, ACTIONS
+from quantum_q_learning import (
+    train_quantum_q_learning, quantum_q_learning_plan,
+    ACTIONS as Q_ACTIONS,
+)
 
 # ──────────────────────────────────────────────────────────────────
 # Colours
@@ -110,7 +114,7 @@ ROBOT_GHOST_COLORS = [
 # ──────────────────────────────────────────────────────────────────
 
 # Supported planners for the interactive simulator
-PLANNER_NAMES = ["A*", "APF", "Q-Learning"]
+PLANNER_NAMES = ["A*", "APF", "Q-Learning", "Quantum QL"]
 
 
 class RobotAgent:
@@ -133,6 +137,7 @@ class RobotAgent:
         self.total_steps = 0
         self.collisions = 0
         self.q_table = None                # pre-trained Q-table (for QL planner)
+        self.q_angles = None               # pre-trained rotation angles (for Quantum QL)
 
     def plan(self, grid, other_robot_positions=None, planner="A*"):
         """
@@ -185,6 +190,30 @@ class RobotAgent:
                     self.path = []
             else:
                 # Fallback to A* if no Q-table
+                result = a_star(grid, start=self.pos, goal=self.goal,
+                                eight_connected=True)
+                if result.success:
+                    self.path = result.path[1:]
+                    self.replan_count += 1
+                    success = True
+                else:
+                    self.path = []
+
+        elif planner == "Quantum QL":
+            if self.q_angles is not None:
+                result = quantum_q_learning_plan(
+                    grid, self.q_angles,
+                    start=self.pos, goal=self.goal,
+                    max_steps=200,
+                )
+                if result.path and len(result.path) > 1:
+                    self.path = result.path[1:]
+                    self.replan_count += 1
+                    success = True
+                else:
+                    self.path = []
+            else:
+                # Fallback to A* if no q_angles
                 result = a_star(grid, start=self.pos, goal=self.goal,
                                 eight_connected=True)
                 if result.success:
@@ -340,6 +369,8 @@ class RealtimeSimulator:
         # Pre-train Q-tables if needed
         if self.planner_name == "Q-Learning":
             self._train_q_tables()
+        elif self.planner_name == "Quantum QL":
+            self._train_quantum_angles()
 
         other_positions = []
         for agent in self.robots:
@@ -364,6 +395,20 @@ class RealtimeSimulator:
             )
             agent.q_table = q_table
         self._log("Q-tables trained.")
+
+    def _train_quantum_angles(self):
+        """Train quantum rotation angles for all robots."""
+        self._log("Training Quantum Q-tables (500 episodes per robot)...")
+        for agent in self.robots:
+            q_angles, _ = train_quantum_q_learning(
+                self.grid,
+                start=agent.start,
+                goal=agent.goal,
+                episodes=500,
+                seed=42 + agent.rid,
+            )
+            agent.q_angles = q_angles
+        self._log("Quantum Q-tables trained.")
 
     def _replan_if_needed(self):
         """Check every robot and re-plan those that need it."""
@@ -619,6 +664,8 @@ class RealtimeSimulator:
         # Re-train Q-tables if switching to QL
         if self.planner_name == "Q-Learning":
             self._train_q_tables()
+        elif self.planner_name == "Quantum QL":
+            self._train_quantum_angles()
         # Re-plan all active robots with new planner
         for agent in self.robots:
             if not agent.reached_goal:
@@ -644,6 +691,8 @@ class RealtimeSimulator:
             agent.replan_count = 0
             agent.total_steps = 0
             agent.collisions = 0
+            agent.q_table = None
+            agent.q_angles = None
         self._log("RESET. Press SPACE to start.")
         self._initial_plan()
 

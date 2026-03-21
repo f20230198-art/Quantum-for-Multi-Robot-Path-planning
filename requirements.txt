@@ -1,3 +1,11 @@
+# Phase 1 & 2 – Classical planners
 numpy
 matplotlib
 pygame
+
+# Phase 3 – Quantum Q-Learning (simulation layer)
+qiskit>=1.0
+qiskit-aer>=0.14
+
+# Phase 4 – QAOA optimizer
+qiskit-optimization>=0.6

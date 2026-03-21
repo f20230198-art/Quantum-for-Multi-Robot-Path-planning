@@ -40,6 +40,7 @@ REFERENCE:
 import math
 from typing import List, Optional, Tuple, Dict
 from grid import Grid, Position
+from utils import path_cost as _path_cost
 
 
 # ------------------------------------------------------------------
@@ -269,11 +270,3 @@ def apf_plan(
 # Helper
 # ------------------------------------------------------------------
 
-def _path_cost(path: List[Position]) -> float:
-    """Euclidean path cost."""
-    cost = 0.0
-    for i in range(len(path) - 1):
-        dr = abs(path[i][0] - path[i + 1][0])
-        dc = abs(path[i][1] - path[i + 1][1])
-        cost += math.sqrt(2) if (dr + dc == 2) else 1.0
-    return cost

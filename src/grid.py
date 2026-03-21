@@ -416,6 +416,139 @@ class Grid:
         return g
 
     @classmethod
+    def create_varied_obstacles(
+        cls,
+        size: int = 20,
+        obstacle_ratio: float = 0.15,
+        seed: Optional[int] = None,
+        start: Optional[Position] = None,
+        goal: Optional[Position] = None,
+    ) -> "Grid":
+        """
+        Create a grid with obstacles of VARYING sizes and shapes,
+        mimicking a more realistic environment (rooms, furniture,
+        walls of different lengths).
+
+        Instead of scattering individual 1×1 cells, this places a mix of:
+            • 1×1 small debris
+            • 2×2 and 3×3 square blocks (furniture / pillars)
+            • Horizontal/vertical walls of random length (2–5 cells)
+            • L-shaped obstacles
+
+        Parameters
+        ----------
+        size : int
+            Grid dimensions.
+        obstacle_ratio : float
+            Approximate fraction of cells that become obstacles.
+        seed : int or None
+        start, goal : Position or None
+        """
+        s = start if start is not None else (0, 0)
+        g_pos = goal if goal is not None else (size - 1, size - 1)
+        base = cls(size=size, obstacle_ratio=0.0, start=s, goal=g_pos, seed=seed)
+        rng = np.random.RandomState(seed)
+
+        target_cells = int(size * size * obstacle_ratio)
+        filled = 0
+
+        # Keep start/goal and their immediate neighbours free
+        protected = {s, g_pos}
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                protected.add((s[0] + dr, s[1] + dc))
+                protected.add((g_pos[0] + dr, g_pos[1] + dc))
+
+        # Shape generators: each returns a list of (r, c) offsets
+        def _block(h, w):
+            return [(r, c) for r in range(h) for c in range(w)]
+
+        def _hwall(length):
+            return [(0, c) for c in range(length)]
+
+        def _vwall(length):
+            return [(r, 0) for r in range(length)]
+
+        def _lshape(arm1, arm2):
+            cells = [(r, 0) for r in range(arm1)]
+            cells += [(arm1 - 1, c) for c in range(1, arm2)]
+            return cells
+
+        shapes = [
+            ("1x1", lambda: _block(1, 1)),
+            ("1x1", lambda: _block(1, 1)),
+            ("2x2", lambda: _block(2, 2)),
+            ("3x3", lambda: _block(3, 3)),
+            ("hwall", lambda: _hwall(rng.randint(2, 6))),
+            ("vwall", lambda: _vwall(rng.randint(2, 6))),
+            ("L", lambda: _lshape(rng.randint(2, 4), rng.randint(2, 4))),
+        ]
+
+        max_attempts = target_cells * 10
+        attempt = 0
+        while filled < target_cells and attempt < max_attempts:
+            attempt += 1
+            # Pick a random shape
+            _, shape_fn = shapes[rng.randint(0, len(shapes))]
+            offsets = shape_fn()
+
+            # Pick a random anchor position
+            ar = rng.randint(0, size)
+            ac = rng.randint(0, size)
+
+            # Check all cells of this shape fit and don't hit protected
+            cells_to_place = []
+            ok = True
+            for dr, dc in offsets:
+                r, c = ar + dr, ac + dc
+                if not (0 <= r < size and 0 <= c < size):
+                    ok = False
+                    break
+                if (r, c) in protected:
+                    ok = False
+                    break
+                if base.grid[r, c] == 1:
+                    continue  # already obstacle, skip but don't fail
+                cells_to_place.append((r, c))
+            if not ok:
+                continue
+
+            for r, c in cells_to_place:
+                base.grid[r, c] = 1
+                filled += 1
+                if filled >= target_cells:
+                    break
+
+        # Verify connectivity — if blocked, clear a BFS corridor
+        if not base._is_reachable(base.grid):
+            # Fall back: clear obstacles along a simple path
+            from collections import deque
+            # BFS on the full grid ignoring obstacles to find shortest geometric path
+            visited = {}
+            queue = deque([base.start])
+            visited[base.start] = None
+            found = False
+            while queue and not found:
+                cur = queue.popleft()
+                if cur == base.goal:
+                    found = True
+                    break
+                r, c = cur
+                for dr, dc in cls.DIRECTIONS_8:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < size and 0 <= nc < size and (nr, nc) not in visited:
+                        visited[(nr, nc)] = cur
+                        queue.append((nr, nc))
+            # Clear the corridor
+            if found:
+                pos = base.goal
+                while pos is not None:
+                    base.grid[pos[0], pos[1]] = 0
+                    pos = visited.get(pos)
+
+        return base
+
+    @classmethod
     def create_narrow_passage(cls, size: int = 20) -> "Grid":
         """
         Create a grid with a narrow corridor the robot must pass through.
