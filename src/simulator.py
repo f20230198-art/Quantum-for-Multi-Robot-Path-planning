@@ -65,6 +65,8 @@ from quantum_q_learning import (
     train_quantum_q_learning, quantum_q_learning_plan,
     ACTIONS as Q_ACTIONS,
 )
+from multi_robot import generate_candidate_paths, compute_conflict_matrix
+from qaoa_optimizer import qaoa_select
 
 # ──────────────────────────────────────────────────────────────────
 # Colours
@@ -114,7 +116,7 @@ ROBOT_GHOST_COLORS = [
 # ──────────────────────────────────────────────────────────────────
 
 # Supported planners for the interactive simulator
-PLANNER_NAMES = ["A*", "APF", "Q-Learning", "Quantum QL"]
+PLANNER_NAMES = ["A*", "APF", "Q-Learning", "Quantum QL", "QAOA"]
 
 
 class RobotAgent:
@@ -371,6 +373,9 @@ class RealtimeSimulator:
             self._train_q_tables()
         elif self.planner_name == "Quantum QL":
             self._train_quantum_angles()
+        elif self.planner_name == "QAOA":
+            self._plan_qaoa()
+            return
 
         other_positions = []
         for agent in self.robots:
@@ -410,12 +415,62 @@ class RealtimeSimulator:
             agent.q_angles = q_angles
         self._log("Quantum Q-tables trained.")
 
+    def _plan_qaoa(self):
+        """Use QAOA to find the best combination of paths for all robots."""
+        self._log("QAOA: generating candidate paths...")
+        all_candidates = {}
+        for agent in self.robots:
+            cands = generate_candidate_paths(
+                self.grid, start=agent.pos, goal=agent.goal,
+                num_candidates=4, seed=42 + agent.rid,
+            )
+            all_candidates[agent.rid] = cands
+            self._log(f"  R{agent.rid}: {len(cands)} candidates")
+
+        if not all(len(c) > 0 for c in all_candidates.values()):
+            self._log("QAOA: some robots have no paths, falling back to A*")
+            for agent in self.robots:
+                agent.plan(self.grid, [], planner="A*")
+            return
+
+        self._log("QAOA: optimizing path selection...")
+        selection = qaoa_select(
+            all_candidates, conflict_penalty=10.0,
+            p=1, num_restarts=2, seed=42,
+        )
+
+        for agent in self.robots:
+            rid = agent.rid
+            chosen_idx = selection.get(rid, 0)
+            path = all_candidates[rid][chosen_idx]["path"]
+            # Remove current position from the path
+            if path and path[0] == agent.pos:
+                agent.path = path[1:]
+            else:
+                agent.path = path
+            agent.replan_count += 1
+            self._log(f"  R{rid}: QAOA picked path {chosen_idx} "
+                      f"({len(agent.path)} steps)")
+        self._log("QAOA: selection complete.")
+
     def _replan_if_needed(self):
         """Check every robot and re-plan those that need it."""
         occupied = set()
         for a in self.robots:
             if not a.reached_goal:
                 occupied.add(a.pos)
+
+        needs_replan = False
+        for agent in self.robots:
+            if agent.needs_replan(self.grid, occupied - {agent.pos}):
+                needs_replan = True
+                break
+
+        if needs_replan and self.planner_name == "QAOA":
+            # QAOA replans all robots together (coordinated)
+            self.total_replans += 1
+            self._plan_qaoa()
+            return
 
         for agent in self.robots:
             if agent.needs_replan(self.grid, occupied - {agent.pos}):
@@ -666,6 +721,9 @@ class RealtimeSimulator:
             self._train_q_tables()
         elif self.planner_name == "Quantum QL":
             self._train_quantum_angles()
+        elif self.planner_name == "QAOA":
+            self._plan_qaoa()
+            return
         # Re-plan all active robots with new planner
         for agent in self.robots:
             if not agent.reached_goal:

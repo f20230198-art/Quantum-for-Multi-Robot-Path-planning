@@ -164,6 +164,7 @@ src/
   q_learning.py         -->  Standard Q-Learning (baseline for comparison)
   quantum_q_learning.py -->  Quantum-inspired Q-Learning (our method)
   hybrid_planner.py     -->  Three-layer hybrid: A* + APF + Quantum escape
+  qaoa_optimizer.py     -->  QAOA multi-robot path optimizer (Phase 4)
   multi_robot.py        -->  Multi-robot candidate paths + conflict analysis
   dynamic_env.py        -->  Time-stepped simulation with moving obstacles
   visualize.py          -->  All plotting and graph generation
@@ -237,7 +238,7 @@ This project draws from three research papers:
 | **Phase 1** | Multi-robot support, candidate path generation, conflict analysis, classical selectors, dynamic environment, interactive simulator | Done |
 | **Phase 2** | APF local planner, Q-Learning baseline, planner comparisons | Done |
 | **Phase 3** | Quantum Q-Learning, Hybrid Planner (A\* + APF + Quantum), comprehensive performance comparisons across obstacle densities | Done |
-| **Phase 4** | QAOA optimizer for multi-robot path selection using Qiskit | Planned |
+| **Phase 4** | QAOA optimizer for multi-robot path selection (QUBO + numpy QAOA simulator + optional Qiskit) | Done |
 
 ---
 

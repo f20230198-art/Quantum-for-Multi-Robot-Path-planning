@@ -58,7 +58,10 @@ from quantum_q_learning import (quantum_q_learning_full,
                                  verify_qiskit_match)
 from hybrid_planner import hybrid_plan
 from visualize import (draw_quantum_comparison, draw_learning_curves,
-                       draw_full_comparison, draw_varied_obstacle_grids)
+                       draw_full_comparison, draw_varied_obstacle_grids,
+                       draw_qaoa_selection_comparison, draw_scalability_chart,
+                       draw_qaoa_explanation)
+from qaoa_optimizer import qaoa_select, qaoa_select_full, scalability_benchmark
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -680,15 +683,170 @@ def main():
                   f"{info['steps']:<8d}  "
                   f"{info['time_ms']:<10.1f}")
 
+    print("\n  Previous outputs (Week 1 + Phase 1-3) also regenerated.")
+
+    # ==============================================================
+    #  PHASE 4 — QAOA Multi-Robot Path Optimizer
+    # ==============================================================
+
+    print("\n" + "=" * 60)
+    print("  PHASE 4 — QAOA Multi-Robot Path Optimizer")
+    print("=" * 60)
+
+    # ---- 31. Run QAOA on the same multi-robot environment from Phase 1 ----
+    print("\n[QAOA]  Running QAOA optimizer on multi-robot environment...")
+    print(f"[QAOA]  Environment: 3 robots × 4 candidate paths = 12 qubits")
+
+    qaoa_result = qaoa_select_full(
+        all_candidates,
+        conflict_penalty=10.0,
+        one_hot_penalty=50.0,
+        p=2,
+        num_restarts=3,
+        seed=42,
+    )
+    print(f"[QAOA]  {qaoa_result}")
+
+    # ---- 32. Compare QAOA against classical selectors ----
+    print("\n[compare]  Comparing QAOA vs classical selection methods...")
+
+    sel_qaoa = qaoa_result.selection
+    selections_p4 = {
+        "Greedy (shortest)": sel_greedy,
+        "Random": sel_random,
+        "Brute-Force (optimal)": sel_brute,
+        "QAOA (quantum)": sel_qaoa,
+    }
+    eval_results_p4 = {}
+    for name, sel in selections_p4.items():
+        ev = evaluate_selection(all_candidates, sel, conflict_penalty=10.0)
+        eval_results_p4[name] = ev
+        print(f"  {name:25s}  →  cost={ev['total_cost']:.1f}  "
+              f"conflicts={ev['total_conflicts']}  score={ev['score']:.1f}")
+
+    # ---- 33. Visualize QAOA selection comparison ----
+    draw_qaoa_selection_comparison(
+        mr_grid,
+        all_candidates,
+        selections_p4,
+        eval_results_p4,
+        title="Phase 4 — Path Selection: Classical vs QAOA",
+        save_path=os.path.join(save_dir, "phase4_qaoa_comparison.png"),
+    )
+
+    # ---- 33b. QAOA step-by-step explanation figure ----
+    # Use a grid with actual conflicts for a more interesting visualization
+    print("\n[QAOA]  Generating explanation figure (grid with conflicts)...")
+    expl_grid = Grid.create_multi_robot_env(
+        size=20, obstacle_ratio=0.10, num_robots=3, num_dynamic=2, seed=1,
+    )
+    expl_input = prepare_qaoa_input(expl_grid, num_candidates=4, seed=1)
+    expl_cands = expl_input["all_candidates"]
+    expl_bf_sel = brute_force_select(expl_cands, conflict_penalty=10.0)
+    expl_qaoa = qaoa_select_full(
+        expl_cands, p=1, num_restarts=2, seed=1,
+    )
+    expl_bf_eval = evaluate_selection(expl_cands, expl_bf_sel, 10.0)
+    expl_qaoa_eval = evaluate_selection(expl_cands, expl_qaoa.selection, 10.0)
+    print(f"  BF:   cost={expl_bf_eval['total_cost']:.1f}, "
+          f"conflicts={expl_bf_eval['total_conflicts']}, "
+          f"score={expl_bf_eval['score']:.1f}")
+    print(f"  QAOA: cost={expl_qaoa_eval['total_cost']:.1f}, "
+          f"conflicts={expl_qaoa_eval['total_conflicts']}, "
+          f"score={expl_qaoa_eval['score']:.1f}")
+    draw_qaoa_explanation(
+        expl_grid,
+        expl_cands,
+        expl_input["conflict_matrix"],
+        expl_input["index_map"],
+        qaoa_selection=expl_qaoa.selection,
+        bf_selection=expl_bf_sel,
+        qaoa_eval=expl_qaoa_eval,
+        bf_eval=expl_bf_eval,
+        title="Phase 4 — How QAOA Works (Step by Step)",
+        save_path=os.path.join(save_dir, "phase4_qaoa_explanation.png"),
+    )
+
+    # ---- 34. QAOA quality analysis ----
+    bf_score = eval_results_p4["Brute-Force (optimal)"]["score"]
+    qaoa_score = eval_results_p4["QAOA (quantum)"]["score"]
+    quality_ratio = bf_score / qaoa_score if qaoa_score > 0 else 0
+    print(f"\n[QAOA]  Quality analysis:")
+    print(f"  Brute-Force score: {bf_score:.1f} (optimal)")
+    print(f"  QAOA score:        {qaoa_score:.1f}")
+    print(f"  Quality ratio:     {quality_ratio:.4f} "
+          f"({'OPTIMAL MATCH' if abs(quality_ratio - 1.0) < 0.01 else 'NEAR-OPTIMAL'})")
+
+    # ---- 35. Scalability benchmark ----
+    print("\n[scale]  Running scalability benchmark (QAOA vs Brute-Force)...")
+    bench_data = scalability_benchmark(
+        robot_counts=[2, 3, 4],
+        candidates_per_robot=3,
+        conflict_penalty=10.0,
+        seed=42,
+    )
+
+    print(f"\n  {'Robots':<8s}  {'Qubits':<8s}  {'Combos':<12s}  "
+          f"{'BF Time(ms)':<14s}  {'QAOA Time(ms)':<14s}  "
+          f"{'BF Score':<12s}  {'QAOA Score':<12s}")
+    print(f"  {'-'*8}  {'-'*8}  {'-'*12}  {'-'*14}  {'-'*14}  {'-'*12}  {'-'*12}")
+    for d in bench_data:
+        qaoa_t = f"{d['qaoa_time_ms']:.1f}" if d['qaoa_time_ms'] is not None else "N/A"
+        qaoa_s = f"{d['qaoa_score']:.1f}" if d['qaoa_score'] is not None else "N/A"
+        print(f"  {d['n_robots']:<8d}  {d['n_qubits']:<8d}  "
+              f"{d['total_combos']:<12d}  {d['bf_time_ms']:<14.1f}  "
+              f"{qaoa_t:<14s}  {d['bf_score']:<12.1f}  {qaoa_s:<12s}")
+
+    # ---- 36. Scalability chart ----
+    draw_scalability_chart(
+        bench_data,
+        title="Phase 4 — QAOA vs Brute-Force Scalability",
+        save_path=os.path.join(save_dir, "phase4_scalability.png"),
+    )
+
+    # ---- 37. Run QAOA-selected paths in simulation ----
+    print("\n[sim]  Running simulation with QAOA-selected paths...")
+    qaoa_paths = {}
+    for cfg in mr_grid.robot_configs:
+        rid = cfg["id"]
+        chosen_idx = sel_qaoa[rid]
+        qaoa_paths[rid] = all_candidates[rid][chosen_idx]["path"]
+
+    sim_qaoa = Simulation(mr_grid, qaoa_paths, max_ticks=200)
+    sim_qaoa_result = sim_qaoa.run()
+    print(f"[sim]  Completed in {sim_qaoa_result.total_ticks} ticks")
+    print(f"[sim]  All reached goal: {sim_qaoa_result.all_reached_goal}")
+    print(f"[sim]  Total collisions: {sim_qaoa_result.total_collisions}")
+    for rid, stats in sim_qaoa_result.per_robot_stats.items():
+        print(f"         Robot {rid}: path_len={stats['path_length']}, "
+              f"time={stats['time_to_goal']}, collisions={stats['collisions']}")
+
+    # ---- 38. QAOA simulation GIF ----
+    print("\n[viz]  Generating QAOA simulation GIF...")
+    draw_simulation_gif(
+        mr_grid,
+        sim_qaoa_result,
+        save_path=os.path.join(save_dir, "phase4_qaoa_simulation.gif"),
+        fps=4,
+        title="Multi-Robot Simulation (QAOA Selection)",
+    )
+
+    # ---- Phase 4 Summary ----
+    print("\n" + "=" * 60)
+    print("  PHASE 4 COMPLETE — ALL OUTPUTS SAVED")
+    print("=" * 60)
+    print("  New Phase 4 files:")
+    print("    • phase4_qaoa_comparison.png   — QAOA vs classical selectors")
+    print("    • phase4_qaoa_explanation.png  — How QAOA works (step by step)")
+    print("    • phase4_scalability.png       — QAOA vs brute-force scaling")
+    print("    • phase4_qaoa_simulation.gif   — Simulation with QAOA paths")
+
     # ---- Final Summary ----
     print("\n" + "=" * 60)
-    print("  ALL PHASES COMPLETE — ALL OUTPUTS SAVED")
+    print("  ALL PHASES COMPLETE (Week 1 + Phase 1-4)")
     print("=" * 60)
-    print("  New comparison files:")
-    print("    • comparison_varied_grids.png      — Grids at different densities")
-    print("    • comparison_all_planners.png       — Bar chart: all 5 planners")
-    print("\n  Previous outputs (Week 1 + Phase 1-3) also regenerated.")
-    print("\n  Next: Phase 4 — QAOA Multi-Robot Path Optimizer")
+    print("  Total output files: 24+")
+    print("  All saved to: experiments/results/")
 
 
 if __name__ == "__main__":
