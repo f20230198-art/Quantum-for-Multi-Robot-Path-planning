@@ -1,15 +1,10 @@
-# Phase 1 & 2 – Classical planners
+# Core dependencies (required)
 numpy
 matplotlib
 pygame
-
-# Phase 3 – Quantum Q-Learning (simulation layer)
-qiskit>=1.0
-qiskit-aer>=0.14
-
-# Phase 4 – QAOA optimizer
 scipy
-qiskit-optimization>=0.6
 
-# Interactive dashboard
-streamlit
+# Optional – Quantum backends (project works without these using numpy fallback)
+# qiskit>=1.0
+# qiskit-aer>=0.14
+# qiskit-optimization>=0.6
