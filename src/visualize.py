@@ -1533,3 +1533,151 @@ def draw_scalability_chart(
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"[visualize] Saved scalability chart to {save_path}")
     return fig
+
+
+# ==================================================================
+#  Q-Value Divergence Demo
+# ==================================================================
+
+def draw_qvalue_divergence(
+    q_table: np.ndarray,
+    q_angles: np.ndarray,
+    title: str = "Q-Value Divergence: Classical vs Quantum",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Side-by-side visualization showing classical Q-values spreading
+    unboundedly vs quantum rotation angles staying in [0, π].
+
+    Three panels:
+      Left:   Histogram of classical Q-values (unbounded range)
+      Middle: Histogram of quantum angles (bounded [0, π])
+      Right:  Box-plot comparison of value ranges
+    """
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(21, 6))
+
+    # Flatten non-zero entries
+    cl_vals = q_table[q_table != 0].flatten()
+    qu_vals = q_angles[q_angles != 0].flatten()
+
+    # --- Panel 1: Classical Q-value distribution ---
+    if len(cl_vals) > 0:
+        ax1.hist(cl_vals, bins=50, color="#3399FF", edgecolor="white", alpha=0.85)
+        ax1.axvline(cl_vals.min(), color="red", linestyle="--", linewidth=1.5,
+                    label=f"Min = {cl_vals.min():.1f}")
+        ax1.axvline(cl_vals.max(), color="red", linestyle="--", linewidth=1.5,
+                    label=f"Max = {cl_vals.max():.1f}")
+    ax1.set_title("Classical Q-Values\n(UNBOUNDED — can diverge to ±∞)",
+                  fontsize=12, fontweight="bold", color="#CC3333")
+    ax1.set_xlabel("Q-value", fontsize=11)
+    ax1.set_ylabel("Count", fontsize=11)
+    ax1.legend(fontsize=9)
+    ax1.grid(axis="y", alpha=0.3)
+
+    # --- Panel 2: Quantum angle distribution ---
+    if len(qu_vals) > 0:
+        ax2.hist(qu_vals, bins=50, color="#CC33FF", edgecolor="white", alpha=0.85)
+    # Show the bounds
+    ax2.axvline(0, color="green", linestyle="--", linewidth=2,
+                label="Lower bound = 0")
+    ax2.axvline(np.pi, color="green", linestyle="--", linewidth=2,
+                label=f"Upper bound = π ≈ {np.pi:.2f}")
+    ax2.set_title("Quantum Rotation Angles\n(BOUNDED in [0, π] — never diverges)",
+                  fontsize=12, fontweight="bold", color="#009900")
+    ax2.set_xlabel("θ (radians)", fontsize=11)
+    ax2.set_ylabel("Count", fontsize=11)
+    ax2.set_xlim(-0.3, np.pi + 0.3)
+    ax2.legend(fontsize=9)
+    ax2.grid(axis="y", alpha=0.3)
+
+    # --- Panel 3: Range comparison box plot ---
+    data_for_box = []
+    labels_for_box = []
+    if len(cl_vals) > 0:
+        data_for_box.append(cl_vals)
+        labels_for_box.append(f"Classical QL\nrange={cl_vals.max()-cl_vals.min():.1f}")
+    if len(qu_vals) > 0:
+        data_for_box.append(qu_vals)
+        labels_for_box.append(f"Quantum QL\nrange={qu_vals.max()-qu_vals.min():.2f}")
+
+    if data_for_box:
+        bp = ax3.boxplot(data_for_box, labels=labels_for_box, patch_artist=True,
+                         widths=0.5)
+        colors_box = ["#3399FF", "#CC33FF"]
+        for patch, c in zip(bp["boxes"], colors_box[:len(data_for_box)]):
+            patch.set_facecolor(c)
+            patch.set_alpha(0.6)
+
+    ax3.set_title("Value Range Comparison\nClassical spreads — Quantum stays tight",
+                  fontsize=12, fontweight="bold")
+    ax3.set_ylabel("Value", fontsize=11)
+    ax3.grid(axis="y", alpha=0.3)
+
+    fig.suptitle(title, fontsize=15, fontweight="bold", y=1.03)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved Q-value divergence chart to {save_path}")
+    plt.close(fig)
+    return fig
+
+
+# ==================================================================
+#  Dynamic Environment Comparison (A* fails, Hybrid adapts)
+# ==================================================================
+
+def draw_dynamic_comparison(
+    grid,
+    astar_path: list,
+    astar_blocked_step: int,
+    hybrid_path: list,
+    obstacle_positions_at_block: list,
+    title: str = "Dynamic Environment: A* Fails vs Hybrid Adapts",
+    save_path: Optional[str] = None,
+) -> plt.Figure:
+    """
+    Two-panel figure:
+      Left:  A* pre-planned path with an X where it gets blocked
+      Right: Hybrid planner path that successfully adapts
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+
+    # --- Panel 1: A* path that gets blocked ---
+    draw_grid(grid, paths=[astar_path] if astar_path else None,
+              path_colors=["#3399FF"], show=False, ax=ax1,
+              title=f"A* (Static Plan)\nBlocked at step {astar_blocked_step} — CANNOT ADAPT")
+
+    # Mark blocked position with a red X
+    if astar_path and astar_blocked_step < len(astar_path):
+        blocked_pos = astar_path[astar_blocked_step]
+        ax1.plot(blocked_pos[1], blocked_pos[0], "X", color="red",
+                 markersize=20, markeredgewidth=3, zorder=10)
+        ax1.annotate("BLOCKED!", (blocked_pos[1], blocked_pos[0]),
+                     textcoords="offset points", xytext=(10, 10),
+                     fontsize=12, color="red", fontweight="bold",
+                     arrowprops=dict(arrowstyle="->", color="red"))
+
+    # Show dynamic obstacles at the blocking moment
+    for obs_pos in obstacle_positions_at_block:
+        ax1.plot(obs_pos[1], obs_pos[0], "s", color="#FF4444",
+                 markersize=12, markeredgecolor="black", zorder=9)
+
+    # --- Panel 2: Hybrid path that adapts ---
+    draw_grid(grid, paths=[hybrid_path] if hybrid_path else None,
+              path_colors=["#FF9933"], show=False, ax=ax2,
+              title=f"Hybrid (A* + APF + Quantum QL)\nAdapts in real-time — REACHES GOAL")
+
+    # Show dynamic obstacles
+    for obs_pos in obstacle_positions_at_block:
+        ax2.plot(obs_pos[1], obs_pos[0], "s", color="#FF4444",
+                 markersize=12, markeredgecolor="black", zorder=9)
+
+    fig.suptitle(title, fontsize=15, fontweight="bold", y=1.03)
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"[visualize] Saved dynamic comparison to {save_path}")
+    plt.close(fig)
+    return fig
