@@ -1046,13 +1046,33 @@ def draw_full_comparison(
     n_densities = len(densities)
     n_planners = len(all_planners)
 
-    fig, axes = plt.subplots(1, 3, figsize=(22, 7))
+    fig, axes = plt.subplots(2, 2, figsize=(20, 14))
 
     bar_width = 0.8 / n_planners
     x = np.arange(n_densities)
 
-    # ---- Panel 1: Path Cost ----
-    ax1 = axes[0]
+    # ---- Panel 1 (top-left): Success Rate ----
+    ax1 = axes[0, 0]
+    for i, pname in enumerate(all_planners):
+        successes = []
+        for d in densities:
+            info = comparison_data[d].get(pname, {})
+            successes.append(1 if info.get("success", False) else 0)
+        bars = ax1.bar(x + i * bar_width, successes, bar_width,
+                       label=pname, color=_color(pname), edgecolor="white")
+    ax1.set_xlabel("Obstacle Density", fontsize=11)
+    ax1.set_ylabel("Success (1 = Yes)", fontsize=11)
+    ax1.set_title("Reliability (Success Rate)", fontsize=13, fontweight="bold")
+    ax1.set_xticks(x + bar_width * (n_planners - 1) / 2)
+    ax1.set_xticklabels(densities, fontsize=10)
+    ax1.set_ylim(0, 1.3)
+    ax1.set_yticks([0, 1])
+    ax1.set_yticklabels(["Fail", "Success"], fontsize=10)
+    ax1.legend(fontsize=9, loc="upper right")
+    ax1.grid(axis="y", alpha=0.3)
+
+    # ---- Panel 2 (top-right): Path Cost ----
+    ax2 = axes[0, 1]
     for i, pname in enumerate(all_planners):
         costs = []
         for d in densities:
@@ -1061,67 +1081,61 @@ def draw_full_comparison(
             if not info.get("success", False):
                 c = 0
             costs.append(c)
-        bars = ax1.bar(x + i * bar_width, costs, bar_width,
+        bars = ax2.bar(x + i * bar_width, costs, bar_width,
                        label=pname, color=_color(pname), edgecolor="white")
-        # Mark failures with an X
         for j, d in enumerate(densities):
             info = comparison_data[d].get(pname, {})
             if not info.get("success", False):
-                ax1.text(x[j] + i * bar_width, 1, "X",
+                ax2.text(x[j] + i * bar_width, 1, "X",
                          ha="center", va="bottom", fontsize=12,
                          fontweight="bold", color="red")
-    ax1.set_xlabel("Obstacle Density", fontsize=11)
-    ax1.set_ylabel("Path Cost", fontsize=11)
-    ax1.set_title("Path Cost (lower = better)\nX = failed", fontsize=12, fontweight="bold")
-    ax1.set_xticks(x + bar_width * (n_planners - 1) / 2)
-    ax1.set_xticklabels(densities, fontsize=10)
-    ax1.legend(fontsize=9)
-    ax1.grid(axis="y", alpha=0.3)
-
-    # ---- Panel 2: Computation Time ----
-    ax2 = axes[1]
-    for i, pname in enumerate(all_planners):
-        times = []
-        for d in densities:
-            info = comparison_data[d].get(pname, {})
-            times.append(info.get("time_ms", 0))
-        ax2.bar(x + i * bar_width, times, bar_width,
-                label=pname, color=_color(pname), edgecolor="white")
     ax2.set_xlabel("Obstacle Density", fontsize=11)
-    ax2.set_ylabel("Time (ms)", fontsize=11)
-    ax2.set_title("Computation Time", fontsize=12, fontweight="bold")
+    ax2.set_ylabel("Path Cost", fontsize=11)
+    ax2.set_title("Path Cost (lower = better)  X = failed", fontsize=13, fontweight="bold")
     ax2.set_xticks(x + bar_width * (n_planners - 1) / 2)
     ax2.set_xticklabels(densities, fontsize=10)
     ax2.legend(fontsize=9)
     ax2.grid(axis="y", alpha=0.3)
 
-    # ---- Panel 3: Path Length (steps) ----
-    ax3 = axes[2]
+    # ---- Panel 3 (bottom-left): Planning Time (per-query) ----
+    ax3 = axes[1, 0]
     for i, pname in enumerate(all_planners):
-        steps = []
+        times = []
         for d in densities:
             info = comparison_data[d].get(pname, {})
-            s = info.get("steps", 0)
-            if not info.get("success", False):
-                s = 0
-            steps.append(s)
-        bars = ax3.bar(x + i * bar_width, steps, bar_width,
-                       label=pname, color=_color(pname), edgecolor="white")
-        for j, d in enumerate(densities):
-            info = comparison_data[d].get(pname, {})
-            if not info.get("success", False):
-                ax3.text(x[j] + i * bar_width, 1, "X",
-                         ha="center", va="bottom", fontsize=12,
-                         fontweight="bold", color="red")
+            # Use plan_ms (inference only) if available, else time_ms
+            t = info.get("plan_ms", info.get("time_ms", 0))
+            times.append(t)
+        ax3.bar(x + i * bar_width, times, bar_width,
+                label=pname, color=_color(pname), edgecolor="white")
     ax3.set_xlabel("Obstacle Density", fontsize=11)
-    ax3.set_ylabel("Path Length (cells)", fontsize=11)
-    ax3.set_title("Path Length (lower = better)\nX = failed", fontsize=12, fontweight="bold")
+    ax3.set_ylabel("Time (ms)", fontsize=11)
+    ax3.set_title("Planning Time per Query (excludes offline training)",
+                  fontsize=13, fontweight="bold")
     ax3.set_xticks(x + bar_width * (n_planners - 1) / 2)
     ax3.set_xticklabels(densities, fontsize=10)
     ax3.legend(fontsize=9)
     ax3.grid(axis="y", alpha=0.3)
 
-    fig.suptitle(title, fontsize=15, fontweight="bold", y=1.03)
+    # ---- Panel 4 (bottom-right): One-Time Training Cost ----
+    ax4 = axes[1, 1]
+    for i, pname in enumerate(all_planners):
+        trains = []
+        for d in densities:
+            info = comparison_data[d].get(pname, {})
+            trains.append(info.get("train_ms", 0))
+        ax4.bar(x + i * bar_width, trains, bar_width,
+                label=pname, color=_color(pname), edgecolor="white")
+    ax4.set_xlabel("Obstacle Density", fontsize=11)
+    ax4.set_ylabel("Time (ms)", fontsize=11)
+    ax4.set_title("One-Time Offline Training Cost\n(A* and APF need no training)",
+                  fontsize=13, fontweight="bold")
+    ax4.set_xticks(x + bar_width * (n_planners - 1) / 2)
+    ax4.set_xticklabels(densities, fontsize=10)
+    ax4.legend(fontsize=9)
+    ax4.grid(axis="y", alpha=0.3)
+
+    fig.suptitle(title, fontsize=16, fontweight="bold", y=1.02)
     plt.tight_layout()
 
     if save_path:

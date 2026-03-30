@@ -115,6 +115,8 @@ def hybrid_plan(
     q_seed: Optional[int] = None,
     # Pre-trained angles (skip training if provided)
     q_angles: Optional[np.ndarray] = None,
+    # Dynamic obstacle stepping
+    step_dynamic: bool = False,
 ) -> HybridResult:
     """
     Run the hybrid planner: A* (global) + APF (local) + Quantum QL (escape).
@@ -193,6 +195,10 @@ def hybrid_plan(
     escape_remaining = 0
 
     for step in range(max_steps):
+        # ── Advance dynamic obstacles (if enabled) ──
+        if step_dynamic:
+            grid.step_dynamic_obstacles()
+
         # ── Goal check ──
         if current == goal:
             cost = _path_cost(full_path)
