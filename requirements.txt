@@ -1,10 +1,10 @@
-# Core dependencies (required)
+# Core dependencies
 numpy
 matplotlib
-pygame
 scipy
 
-# Optional – Quantum backends (project works without these using numpy fallback)
-# qiskit>=1.0
-# qiskit-aer>=0.14
-# qiskit-optimization>=0.6
+# Quantum backends (required for genuine Qiskit circuit simulation)
+qiskit>=1.0
+qiskit-aer>=0.14
+qiskit-optimization>=0.6
+qiskit-algorithms>=0.4
