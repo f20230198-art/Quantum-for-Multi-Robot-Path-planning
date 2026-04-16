@@ -84,6 +84,7 @@ def build_qubo(
     all_candidates: Dict[int, List[Dict]],
     conflict_penalty: float = 10.0,
     one_hot_penalty: float = 50.0,
+    obstacle_penalties: Optional[Dict] = None,
 ) -> Tuple[np.ndarray, dict]:
     """
     Build the QUBO matrix for multi-robot path selection.
@@ -94,6 +95,7 @@ def build_qubo(
     Objective (to minimize):
         Q = path_cost_terms + conflict_penalty * collision_terms
             + one_hot_penalty * (one-hot constraint violations)
+            + obstacle_collision_penalties (if provided)
 
     Parameters
     ----------
@@ -103,6 +105,9 @@ def build_qubo(
         Weight for collision terms.
     one_hot_penalty : float
         Penalty weight for constraint: each robot picks exactly 1 path.
+    obstacle_penalties : dict or None
+        If provided, maps (robot_id, candidate_idx) → penalty score
+        for paths that collide with predicted dynamic obstacle positions.
 
     Returns
     -------
@@ -156,6 +161,15 @@ def build_qubo(
             for l in range(k + 1, n_k):
                 Q[start + k, start + l] += 2 * one_hot_penalty
         # Constant term +P (ignored in optimization, but noted)
+
+    # --- Dynamic obstacle penalties (linear, diagonal) ---
+    # Adds cost to paths that collide with predicted obstacle positions
+    if obstacle_penalties:
+        for (rid, k), penalty in obstacle_penalties.items():
+            if rid in offsets:
+                flat_idx = offsets[rid] + k
+                if flat_idx < n_vars:
+                    Q[flat_idx, flat_idx] += penalty
 
     var_map = {
         "robot_ids": rids,
@@ -433,7 +447,7 @@ def qaoa_optimize_numpy(
 
 
 # ------------------------------------------------------------------
-# Qiskit QAOA Backend (optional)
+# Qiskit QAOA Backend
 # ------------------------------------------------------------------
 
 def _try_qiskit_qaoa(
@@ -443,56 +457,131 @@ def _try_qiskit_qaoa(
     conflict_penalty: float,
     one_hot_penalty: float,
     p: int = 2,
+    shots: int = 1024,
 ) -> Optional[Dict]:
     """
-    Try using qiskit-optimization's QAOA. Returns None if not available.
+    Build and run a genuine QAOA circuit using Qiskit gates on AerSimulator.
+
+    Instead of using the high-level qiskit-optimization wrapper (which has
+    compatibility issues with Qiskit 2.x), this function constructs the
+    QAOA circuit explicitly from gates:
+        1. Initialize in uniform superposition |+⟩^n
+        2. For each layer: apply cost unitary (RZZ + RZ) then mixer (RX)
+        3. Measure all qubits with shots
+        4. Pick the best bitstring from measurement results
+
+    This is genuine quantum circuit execution — the results include
+    real measurement statistics from finite shot sampling.
     """
     try:
-        from qiskit_optimization import QuadraticProgram
-        from qiskit_optimization.algorithms import MinimumEigenOptimizer
-        from qiskit_algorithms import QAOA
-        from qiskit_algorithms.optimizers import COBYLA
-        from qiskit.primitives import Sampler
+        from qiskit.circuit import QuantumCircuit
+        from qiskit_aer import AerSimulator
     except ImportError:
         return None
 
     try:
-        n_vars = var_map["n_vars"]
-        rids = var_map["robot_ids"]
+        from scipy.optimize import minimize as scipy_minimize
 
-        # Build QuadraticProgram
-        qp = QuadraticProgram("multi_robot_path_selection")
+        n = Q.shape[0]
+        if n > 16:
+            return None  # too many qubits for simulator
 
-        # Add binary variables
-        for i in range(n_vars):
-            qp.binary_var(f"x{i}")
+        # Convert QUBO to Ising for circuit construction
+        J, h, offset = _qubo_to_ising(Q)
 
-        # Set objective from QUBO matrix
-        linear = {f"x{i}": float(Q[i, i]) for i in range(n_vars)}
-        quadratic = {}
-        for i in range(n_vars):
-            for j in range(i + 1, n_vars):
-                if abs(Q[i, j]) > 1e-10:
-                    quadratic[(f"x{i}", f"x{j}")] = float(Q[i, j])
+        sim = AerSimulator()
 
-        qp.minimize(linear=linear, quadratic=quadratic)
+        def _build_qaoa_circuit(params):
+            """Build a QAOA circuit with given gamma/beta parameters."""
+            gammas = params[:p]
+            betas = params[p:]
 
-        # Solve with QAOA
-        sampler = Sampler()
-        optimizer = COBYLA(maxiter=200)
-        qaoa = QAOA(sampler=sampler, optimizer=optimizer, reps=p)
-        solver = MinimumEigenOptimizer(qaoa)
-        result = solver.solve(qp)
+            qc = QuantumCircuit(n, n)
 
-        # Decode solution
-        bitstring = np.array([result.variables_dict[f"x{i}"]
-                              for i in range(n_vars)])
-        selection = decode_bitstring(bitstring, var_map)
+            # Initial state: uniform superposition
+            for i in range(n):
+                qc.h(i)
+
+            # QAOA layers
+            for layer in range(p):
+                gamma = gammas[layer]
+                beta = betas[layer]
+
+                # Cost unitary: ZZ interactions (from J matrix)
+                for i in range(n):
+                    for j in range(i + 1, n):
+                        if abs(J[i, j]) > 1e-10:
+                            qc.rzz(2 * gamma * J[i, j], i, j)
+
+                # Cost unitary: Z rotations (from h vector)
+                for i in range(n):
+                    if abs(h[i]) > 1e-10:
+                        qc.rz(2 * gamma * h[i], i)
+
+                # Mixer unitary: X rotations
+                for i in range(n):
+                    qc.rx(2 * beta, i)
+
+            # Measure all qubits
+            qc.measure(range(n), range(n))
+            return qc
+
+        def _evaluate_params(params):
+            """Run circuit and compute expected energy from shot statistics."""
+            qc = _build_qaoa_circuit(params)
+            result = sim.run(qc, shots=shots).result()
+            counts = result.get_counts()
+
+            # Compute expected QUBO energy from measurement distribution
+            total_energy = 0.0
+            for bitstr, count in counts.items():
+                # Qiskit returns bitstrings in reverse order
+                bits = np.array([int(b) for b in reversed(bitstr)], dtype=np.float64)
+                energy = float(bits @ Q @ bits)
+                total_energy += energy * count
+
+            return total_energy / shots
+
+        # Optimize QAOA parameters
+        best_params = None
+        best_cost = float("inf")
+        rng = np.random.RandomState(42)
+
+        for restart in range(3):
+            init_params = rng.uniform(0, 2 * np.pi, size=2 * p)
+            result = scipy_minimize(
+                _evaluate_params, init_params,
+                method="COBYLA",
+                options={"maxiter": 100, "rhobeg": 0.5},
+            )
+            if result.fun < best_cost:
+                best_cost = result.fun
+                best_params = result.x
+
+        # Final measurement with more shots for best result
+        final_qc = _build_qaoa_circuit(best_params)
+        final_result = sim.run(final_qc, shots=shots * 4).result()
+        final_counts = final_result.get_counts()
+
+        # Find bitstring with lowest QUBO energy
+        best_energy = float("inf")
+        best_bits = None
+        for bitstr, count in final_counts.items():
+            bits = np.array([int(b) for b in reversed(bitstr)], dtype=np.float64)
+            energy = float(bits @ Q @ bits)
+            if energy < best_energy:
+                best_energy = energy
+                best_bits = bits
+
+        if best_bits is None:
+            return None
+
+        selection = decode_bitstring(best_bits, var_map)
 
         return {
             "selection": selection,
-            "bitstring": bitstring,
-            "energy": result.fval,
+            "bitstring": best_bits,
+            "energy": best_energy,
         }
     except Exception:
         return None
@@ -510,12 +599,13 @@ def qaoa_select(
     num_restarts: int = 5,
     seed: int = 0,
     prefer_qiskit: bool = True,
+    obstacle_penalties: Optional[Dict] = None,
 ) -> Dict[int, int]:
     """
     Select one path per robot using QAOA optimization.
 
-    This is the main entry point — drop-in replacement for
-    greedy_select() or brute_force_select().
+    Tries Qiskit QAOA backend first (genuine quantum circuit simulation),
+    falls back to numpy statevector simulator if unavailable.
 
     Parameters
     ----------
@@ -533,13 +623,29 @@ def qaoa_select(
         Random seed.
     prefer_qiskit : bool
         If True and qiskit-optimization is available, use it.
+    obstacle_penalties : dict or None
+        Dynamic obstacle penalties for paths.
 
     Returns
     -------
     selection : dict
         robot_id → index of selected candidate.
     """
-    Q, var_map = build_qubo(all_candidates, conflict_penalty, one_hot_penalty)
+    Q, var_map = build_qubo(
+        all_candidates, conflict_penalty, one_hot_penalty,
+        obstacle_penalties=obstacle_penalties,
+    )
+
+    # Try Qiskit backend first
+    if prefer_qiskit:
+        qiskit_result = _try_qiskit_qaoa(
+            Q, var_map, all_candidates,
+            conflict_penalty, one_hot_penalty, p=p,
+        )
+        if qiskit_result is not None:
+            return qiskit_result["selection"]
+
+    # Fallback to numpy
     bitstring, _, _ = qaoa_optimize_numpy(Q, p=p, num_restarts=num_restarts, seed=seed)
     selection = decode_bitstring(bitstring, var_map)
     return selection

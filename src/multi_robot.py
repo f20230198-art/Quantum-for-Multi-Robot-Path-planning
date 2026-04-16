@@ -411,3 +411,96 @@ def prepare_qaoa_input(
         "cost_vector": cost_vector,
         "robot_configs": grid.robot_configs,
     }
+
+
+# ------------------------------------------------------------------
+# Dynamic obstacle-aware conflict penalties
+# ------------------------------------------------------------------
+
+def compute_dynamic_obstacle_penalties(
+    grid: Grid,
+    all_candidates: Dict[int, List[Dict]],
+    lookahead_ticks: int = 50,
+    obstacle_penalty: float = 15.0,
+) -> Dict:
+    """
+    Predict dynamic obstacle positions over time and penalize
+    candidate paths that collide with them.
+
+    This enables the QAOA optimizer to avoid selecting paths that
+    will be blocked by moving obstacles during execution.
+
+    Parameters
+    ----------
+    grid : Grid
+        Grid with dynamic obstacles configured.
+    all_candidates : dict
+        robot_id → list of candidate path dicts.
+    lookahead_ticks : int
+        How many timesteps to simulate obstacle movement.
+    obstacle_penalty : float
+        Penalty per collision timestep.
+
+    Returns
+    -------
+    penalties : dict
+        Maps (robot_id, candidate_idx) → total penalty score.
+        Only includes entries with non-zero penalties.
+    """
+    # Predict dynamic obstacle positions over time
+    obstacle_trajectories = _predict_obstacle_trajectories(grid, lookahead_ticks)
+
+    # Build set of (position, timestep) pairs for fast lookup
+    obstacle_spacetime = set()
+    for t, positions in enumerate(obstacle_trajectories):
+        for pos in positions:
+            obstacle_spacetime.add((pos, t))
+
+    # Check each candidate path against obstacle spacetime
+    penalties = {}
+    for rid in sorted(all_candidates.keys()):
+        for k, cand in enumerate(all_candidates[rid]):
+            path = cand["path"]
+            collision_count = 0
+            for t, pos in enumerate(path):
+                if t < lookahead_ticks and (pos, t) in obstacle_spacetime:
+                    collision_count += 1
+            # Also check waiting at goal (path shorter than lookahead)
+            if len(path) < lookahead_ticks:
+                goal_pos = path[-1]
+                for t in range(len(path), lookahead_ticks):
+                    if (goal_pos, t) in obstacle_spacetime:
+                        collision_count += 1
+
+            if collision_count > 0:
+                penalties[(rid, k)] = obstacle_penalty * collision_count
+
+    return penalties
+
+
+def _predict_obstacle_trajectories(
+    grid: Grid,
+    ticks: int,
+) -> List[List]:
+    """
+    Simulate dynamic obstacle movement for `ticks` steps and record
+    positions at each timestep.
+
+    Uses the grid's dynamic obstacle configuration (bounce/loop patterns)
+    to predict future positions without modifying the original grid.
+
+    Returns
+    -------
+    trajectories : list of list
+        trajectories[t] = list of obstacle positions at timestep t.
+    """
+    import copy
+    sim_grid = copy.deepcopy(grid)
+    trajectories = []
+
+    for t in range(ticks):
+        positions = sim_grid.get_dynamic_obstacle_positions()
+        trajectories.append(list(positions))
+        sim_grid.step_dynamic_obstacles()
+
+    return trajectories
