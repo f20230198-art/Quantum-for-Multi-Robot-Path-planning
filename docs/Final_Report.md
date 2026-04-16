@@ -1,335 +1,183 @@
 # Final Report
-## Quantum-Inspired Multi-Robot Path Planning
+## QAOA-Based Multi-Robot Path Coordination via QUBO Formulation
 
 ---
 
 ## 1. Abstract
 
-We present a hybrid quantum-classical system for multi-robot path planning in dynamic 2D grid environments. The system addresses two fundamental challenges: (1) single robots getting trapped in local minima during navigation, and (2) exponential scaling of multi-robot coordination as robot count increases.
+This project presents a hybrid quantum-classical framework for multi-robot path planning, with the primary contribution focused on multi-robot coordination. Classical A* is used to generate candidate paths per robot, and Quantum Approximate Optimization Algorithm (QAOA) is used to solve the combinatorial path-assignment problem through a QUBO formulation.
 
-Our solution combines five algorithms in a layered architecture: A\* for global planning, Artificial Potential Fields (APF) for real-time obstacle avoidance, Quantum-Inspired Q-Learning for trap escape, a Hybrid Planner that integrates all three, and QAOA for multi-robot path coordination. The key contributions are a Grover-inspired rotation-based Q-Learning update rule that replaces scalar Q-values with bounded qubit rotation angles, and a QUBO-based QAOA formulation that selects collision-free path combinations across multiple robots.
-
-Experiments on 20x20 grids with varying obstacle densities (10-30%) demonstrate that the quantum Q-Learning agent escapes U-shaped traps where APF fails, and the QAOA optimizer achieves 98.7% of brute-force optimal quality while offering polynomial scaling potential.
+The framework also includes an auxiliary quantum-inspired Q-Learning module that represents action values as bounded qubit rotation angles (theta in [0, pi]) to stabilize learning dynamics. Across benchmark scenarios, QAOA achieves near-optimal assignment quality (about 99.3% of brute-force on average in paper experiments) while remaining conflict-aware. We report results honestly: at current tested scales, brute-force is often faster, and the practical scaling advantage of QAOA remains a larger-scale and hardware-dependent objective.
 
 ---
 
-## 2. Problem Statement
+## 2. Problem Definition
 
-### 2.1 The Multi-Robot Path Planning Problem
+Given N robots and K candidate paths per robot, the coordination problem is to choose one path per robot such that total path cost is minimized while inter-robot collisions are avoided.
 
-Given N robots in a 2D grid with static and dynamic obstacles, each robot must navigate from a start position to a goal position. The challenges are:
+The search space has size K^N, which grows exponentially with team size.
 
-1. **Individual Navigation**: Each robot must find an efficient, collision-free path. Simple planners like APF get stuck in concave obstacles (local minima).
+### Why this is hard
 
-2. **Multi-Robot Coordination**: When multiple robots share the environment, their paths may conflict (two robots occupying the same cell at the same timestep). Selecting the best combination of paths is a combinatorial optimization problem with O(K^N) complexity, where K = candidate paths per robot and N = number of robots.
-
-### 2.2 Why Existing Methods Fall Short
-
-| Method | Strength | Fatal Weakness |
-|--------|----------|----------------|
-| A\* | Optimal shortest path | Single robot only, static environment |
-| APF | Real-time obstacle reaction | Gets stuck in U-shaped traps (local minima) |
-| Classical Q-Learning | Learns from experience, can escape traps | Unbounded Q-values can diverge, crude exploration |
-| Greedy Selection | Fast | Ignores inter-robot collisions |
-| Brute-Force Selection | Finds global optimum | O(K^N) — impossible beyond ~5 robots |
+| Method | Strength | Limitation |
+|--------|----------|------------|
+| A* (single robot) | Optimal path on static map | Does not solve joint coordination across many robots |
+| Greedy path picking | Very fast | Ignores global interaction and can create collisions |
+| Brute-force | Global optimum | Exponential complexity O(K^N) |
 
 ---
 
-## 3. Our Approach
+## 3. Methodology
 
-### 3.1 System Architecture
+### 3.1 Classical-Quantum Pipeline
 
-```
-Layer 1: A*              → Global shortest path (the "GPS route")
-    |
-Layer 2: APF             → Follow route, dodge moving obstacles in real time
-    |
-Layer 3: Quantum QL      → Escape when APF gets stuck (trained policy)
-    |
-Layer 1: A* (replan)     → New global route from escape position
-    |
-Layer 4: QAOA            → Select best path combination across ALL robots
-```
+1. Generate K diverse candidate paths for each robot using A* and penalty-zone perturbations.
+2. Build conflict matrix and per-path costs.
+3. Formulate assignment as QUBO with one-hot constraints.
+4. Convert QUBO to Ising form and solve with QAOA (gate-level circuits).
 
-### 3.2 Quantum-Inspired Q-Learning (Our Key Contribution)
+### 3.2 QUBO Formulation
 
-Instead of storing scalar Q-values that can grow unbounded, we encode each (state, action) pair as a **qubit rotation angle** θ ∈ [0, π]:
+Binary variable x[i,k] = 1 means robot i selects candidate path k.
+
+Objective:
 
 ```
-Standard QL:    Q[state, action] = 3.74           (unbounded real number)
-Quantum QL:     θ[state, action] = 1.2 radians    (bounded angle)
+min  sum(c[i,k] * x[i,k])
+   + lambda_conflict * sum(conflict[(i,k),(j,l)] * x[i,k] * x[j,l])
+   + lambda_onehot * sum_i (sum_k x[i,k] - 1)^2
 ```
 
-The action probability is computed as:
+This jointly encodes path quality, collision penalties, and one-path-per-robot feasibility.
+
+### 3.3 QAOA Circuit Implementation
+
+- Initial state: Hadamard layer to create uniform superposition.
+- Cost unitary: RZZ and RZ rotations from Ising terms.
+- Mixer unitary: RX rotations.
+- Parameter optimization: COBYLA with multiple restarts.
+- Execution backends: NumPy statevector simulator and Qiskit AerSimulator.
+
+### 3.4 Auxiliary Quantum-Inspired Q-Learning
+
+Each state-action pair is represented by rotation angle theta in [0, pi], with action probability:
 
 ```
-P(action) = sin²(θ/2)
+P(a|s) = sin^2(theta[s,a] / 2)
 ```
 
-This is physically meaningful — it's the probability of measuring |1⟩ when a qubit is prepared by applying a Ry(θ) rotation gate to |0⟩.
-
-**Update Rule — Grover-Inspired Rotation:**
-
-Given temporal-difference (TD) error δ:
-- If δ > 0 (action was better than expected): rotate θ toward π → increase P(action)
-- If δ < 0 (action was worse than expected): rotate θ toward 0 → decrease P(action)
-- **Self-regulating damping**: as θ approaches its boundary (0 or π), the update magnitude decreases automatically, preventing saturation
-
-**Key advantages over standard Q-Learning:**
-
-| Property | Standard Q-Learning | Quantum Q-Learning |
-|----------|--------------------|--------------------|
-| Value range | (-∞, +∞) — can diverge | [0, 1] — always bounded |
-| Update mechanism | Additive (can overshoot) | Rotational (self-damping) |
-| Exploration strategy | Crude epsilon-greedy coin flip | Natural via sin² — small θ gives ~50% probability |
-| Convergence | Can oscillate or diverge | Smooth, self-regulating |
-| Physical meaning | None (just a number) | Qubit measurement probability |
-
-### 3.3 Hybrid Three-Layer Planner
-
-The hybrid planner coordinates A\*, APF, and Quantum QL:
-
-1. **A\*** computes the global shortest path
-2. **APF** follows the A\* path step-by-step, using potential fields to dodge dynamic obstacles
-3. **Stuck detection**: monitors the last 10 positions — if they cluster within a 2-cell radius, the robot is declared stuck
-4. **Quantum QL escape**: when stuck, the trained quantum policy takes control and navigates out of the trap
-5. **A\* replan**: once escaped, A\* computes a new global path from the current position
-
-### 3.4 QAOA Multi-Robot Path Optimizer
-
-For N robots with K candidate paths each, we formulate path selection as a **QUBO (Quadratic Unconstrained Binary Optimization)** problem:
-
-**Variables:** x[i,k] ∈ {0, 1} — robot i selects path k
-
-**Objective:** Minimize:
-```
-Σ cost[i,k] · x[i,k]                           (path costs)
-+ λ_conflict · Σ conflicts[a,b] · x[a] · x[b]   (collision penalty)
-+ λ_onehot · Σ (Σ_k x[i,k] - 1)²               (one-hot constraint)
-```
-
-**QAOA Circuit (numpy statevector simulation):**
-1. Start in uniform superposition |+⟩^n (all 2^n combinations equally weighted)
-2. Apply p layers of:
-   - **Cost unitary**: e^{-iγC} — phases based on solution quality
-   - **Mixer unitary**: e^{-iβX} — transverse-field rotation per qubit
-3. Optimize γ, β angles via COBYLA to minimize expected cost
-4. Sample best bitstring from output distribution
-
-For 3 robots × 4 paths = 12 qubits, QAOA simultaneously explores 64 combinations using quantum interference.
+The update uses TD error plus boundary-aware damping so values remain bounded and avoid classical Q-value blow-up.
 
 ---
 
-## 4. Experimental Results
+## 4. Experimental Results (Latest)
 
-All experiments run on 20×20 grids. Python 3.10+, numpy backend.
+Environment family in paper experiments: 8x8 to 15x15 grids, 2 to 4 robots, K=4 candidates unless stated.
 
-### 4.1 Single-Robot: U-Shaped Trap Escape
+### 4.1 Solution Quality: QAOA vs Classical Selectors
 
-The U-trap is a concave obstacle that APF cannot escape (forces cancel at the opening).
+| Scenario | Greedy | Brute-Force (opt.) | QAOA | BF/QAOA |
+|----------|--------|--------------------|------|---------|
+| 8x8, 2 robots | 22.1 (0c) | 22.1 (0c) | 22.1 (0c) | 1.000 |
+| 8x8, 3 robots | 33.2 (0c) | 33.2 (0c) | 33.8 (0c) | 0.983 |
+| 10x10, 3 robots | 63.5 (2c) | 44.6 (0c) | 45.2 (0c) | 0.987 |
+| 10x10, 4 robots | 87.9 (3c) | 59.7 (0c) | 60.3 (0c) | 0.990 |
+| 12x12, 3 robots | 73.1 (2c) | 54.3 (0c) | 54.3 (0c) | 1.000 |
+| 15x15, 3 robots | 66.4 (0c) | 66.4 (0c) | 66.4 (0c) | 1.000 |
 
-| Planner | Success | Path Cost | Notes |
-|---------|---------|-----------|-------|
-| A\* | Yes | 15.66 | Optimal (has full map knowledge) |
-| APF | **No (STUCK)** | — | Oscillates at U-trap opening |
-| Classical Q-Learning | Yes | 18.00 | Escapes after 500 training episodes |
-| **Quantum Q-Learning** | **Yes** | **24.00** | Escapes via rotation-based policy |
-| **Hybrid Planner** | **Yes** | **25.07** | A\* + APF + Quantum escape |
+Average quality is approximately 99.3% of brute-force optimum, and QAOA consistently avoids collision-heavy greedy choices in conflict-prone scenarios.
 
-**Key finding**: APF completely fails on U-traps. Both Q-Learning variants escape, but the quantum version uses bounded, self-regulating updates that prevent value divergence.
+### 4.2 Scalability Study
 
-### 4.2 All Planners vs Obstacle Density
+| Robots | Qubits | Combinations (4^N) | Brute-Force Time | QAOA Time |
+|--------|--------|--------------------|------------------|-----------|
+| 2 | 8 | 16 | <1 ms | 514 ms |
+| 3 | 12 | 64 | <1 ms | 1,079 ms |
+| 4 | 16 | 256 | 1 ms | 1,732 ms |
+| 5 | 20 | 1,024 | 4 ms | not run (qubit limit in NumPy backend) |
+| 6 | 24 | 4,096 | 33 ms | not run |
+| 7 | 28 | 16,384 | 123 ms | not run |
+| 8 | 32 | 65,536 | 589 ms | not run |
 
-Tested across 5 density levels (10%, 15%, 20%, 25%, 30%) with realistic varied-shape obstacles (blocks, walls, L-shapes):
+Current practical result: brute-force is faster at tested sizes; QAOA scaling claim is asymptotic and hardware-dependent.
 
-| Density | A\* | APF | Classical QL | Quantum QL | Hybrid |
-|---------|-----|-----|--------------|------------|--------|
-| 10% | Pass | Pass | Pass | Pass | Pass |
-| 15% | Pass | Pass | Pass | Pass | Pass |
-| 20% | Pass | Varies | Pass | Pass | Pass |
-| 25% | Pass | Often fails | Varies | Varies | Pass |
-| 30% | Pass | Fails | Varies | Varies | Pass |
+### 4.3 Candidate Diversity (K sweep)
 
-**Key finding**: The Hybrid planner remains reliable across densities because it can fall back to quantum escape when APF fails, then replan with A\*.
+10x10, 3 robots:
 
-### 4.3 Multi-Robot: QAOA vs Classical Selection
+| K | Greedy | Brute-Force | QAOA | Greedy Conflicts |
+|---|--------|-------------|------|------------------|
+| 2 | 63.5 | 45.2 | 45.2 | 2 |
+| 3 | 63.5 | 45.2 | 45.2 | 2 |
+| 4 | 63.5 | 44.6 | 45.2 | 2 |
+| 5 | 63.5 | 44.6 | 45.2 | 2 |
+| 6 | 63.5 | 44.6 | 45.2 | 2 |
 
-Environment: 3 robots, 20×20 grid, 4 candidate paths per robot (11 qubits after deduplication).
+Increasing candidate diversity improves globally coordinated solutions, while greedy remains conflict-prone.
 
-| Selector | Total Cost | Conflicts | Score | Scalability |
-|----------|-----------|-----------|-------|-------------|
-| Greedy | 90.6 | 0 | 90.6 | O(NK) — fast but blind to conflicts |
-| Random | 91.7 | 0 | 91.7 | O(NK) — unpredictable |
-| Brute-Force | 90.6 | 0 | **90.6 (optimal)** | **O(K^N) — exponential** |
-| **QAOA** | **91.7** | **0** | **91.7** | **Polynomial potential** |
+### 4.4 QAOA Depth Sweep
 
-**QAOA quality ratio**: 90.6 / 91.7 = **98.7% of optimal**
+10x10, 3 robots, K=4 (brute-force optimum = 44.6):
 
-**Key finding**: QAOA finds collision-free selections within 1.3% of brute-force optimal. On this small instance, brute-force is faster (64 combinations). QAOA's advantage emerges at scale:
+| Depth p | Best BF/QAOA Ratio | Best Time | Note |
+|---------|--------------------|-----------|------|
+| 1 | 1.000 | 1,357 ms | optimal reached with restarts |
+| 2 | 1.000 | 2,836 ms | optimal reached with restarts |
+| 3 | 1.000 | 4,806 ms | optimal reached with restarts |
+| 4 | 1.000 | 5,653 ms | optimal reached with restarts |
 
-| Robots | Combinations | Brute-Force | QAOA |
-|--------|-------------|-------------|------|
-| 3 | 64 | Feasible | Feasible |
-| 5 | 1,024 | Feasible | Feasible |
-| 10 | 1,048,576 | Slow | Feasible |
-| 20 | 1,099,511,627,776 | **Impossible** | **Feasible** |
+For these instances, p=1 already provides strong quality-time tradeoff.
 
----
+### 4.5 Quantum-Inspired Q-Learning Stability
 
-## 5. Our Contributions and Novelty
-
-### 5.1 What's Novel
-
-1. **Grover-Inspired Rotation Q-Learning for Path Planning**
-
-   Prior work (Papers 1-3 in references) explored quantum-inspired RL, but none combined rotation-angle Q-values with a self-damping update rule specifically for grid-based path planning. Our formulation:
-   - Maps Q-values to qubit rotation angles θ ∈ [0, π]
-   - Uses sin²(θ/2) as action probabilities (physically meaningful)
-   - Applies Grover-inspired rotation with boundary damping
-   - Guarantees bounded learning — values never diverge
-
-2. **Extension from Single-Robot to Multi-Robot**
-
-   Paper 3 (Fuzzy A\* + Quantum QL + APF) was limited to single-robot scenarios. **We extend the entire framework to multiple robots** by:
-   - Adding candidate path generation with diversity via penalty zones
-   - Computing pairwise conflict matrices across all robot paths
-   - Using QAOA to select optimal path combinations
-
-3. **QUBO Formulation for Multi-Robot Path Coordination**
-
-   We formulate multi-robot path selection as a QUBO problem that encodes:
-   - Path costs as linear terms
-   - Inter-robot collisions as quadratic penalty terms
-   - One-hot constraints ensuring each robot picks exactly one path
-
-   This is a novel application of QAOA to grid-based multi-robot coordination.
-
-4. **Full Numpy QAOA Simulator**
-
-   Rather than requiring quantum hardware or Qiskit installation, we built a complete QAOA simulator from scratch:
-   - Statevector simulation with 2^n complex amplitudes
-   - Cost and mixer unitary implementations
-   - COBYLA optimization with multi-restart
-   - Works on any machine with numpy + scipy
-
-5. **Five-Layer Hybrid Architecture**
-
-   No prior work combines all five of these in a single system:
-   ```
-   A* (global) + APF (local) + Quantum QL (escape) + A* (replan) + QAOA (coordination)
-   ```
-
-### 5.2 How It's Better Than Existing Methods
-
-| Comparison | Existing Methods | Our Approach |
-|------------|-----------------|--------------|
-| **vs Pure A\*** | Cannot handle dynamic obstacles or multiple robots | Hybrid planner reacts in real-time; QAOA coordinates robots |
-| **vs Pure APF** | Gets stuck in local minima | Quantum QL escape layer breaks free |
-| **vs Standard QL** | Unbounded Q-values, crude exploration | Bounded rotation angles, natural exploration via sin² |
-| **vs Brute-Force coordination** | Exponential O(K^N) scaling | QAOA offers polynomial scaling potential |
-| **vs Paper 3 (single-robot hybrid)** | Only handles one robot | Full multi-robot support with QAOA coordination |
-
-### 5.3 Limitations and Future Work
-
-1. **QAOA simulation overhead**: The numpy statevector simulator is O(2^n) in memory. For >16 qubits (>4 robots with 4 paths each), real quantum hardware or tensor-network methods would be needed.
-
-2. **Small-scale advantage**: At 3 robots, brute-force is still faster than QAOA simulation. The quantum advantage materializes at 10+ robots where brute-force becomes infeasible.
-
-3. **QAOA approximation ratio**: Current implementation achieves ~98.7% of optimal. Higher circuit depth (p > 2) and more optimization restarts could improve this.
-
-4. **Future directions**:
-   - Test on real quantum hardware (IBM Quantum) via Qiskit backend
-   - Scale to 10+ robots using tensor-network QAOA simulation
-   - Add time-dependent QAOA that accounts for dynamic obstacles during coordination
-   - Integrate with the interactive PyGame simulator for real-time QAOA replanning
+In the 30x30 training experiment (2000 episodes), classical Q-values ranged roughly from -24 to 100, while quantum angles remained bounded in [0.06, 2.99] (pi bound is 3.14), demonstrating improved numerical stability.
 
 ---
 
-## 6. Technology Stack
+## 5. Novelty and Contributions
 
-| Component | Technology | Phase |
-|-----------|-----------|-------|
-| Language | Python 3.10+ | All |
-| Numerics | NumPy | All |
-| Optimization | SciPy (COBYLA) | Phase 4 |
-| Visualization | Matplotlib | All |
-| Interactive Simulator | PyGame | Phase 1+ |
-| Quantum RL | Qiskit + Qiskit Aer (optional) | Phase 3 |
-| Quantum Optimization | Numpy QAOA simulator + Qiskit Optimization (optional) | Phase 4 |
+1. **QAOA-based multi-robot coordination formulation**
+   The core novelty is mapping robot path assignment to QUBO/Ising and solving it with explicit QAOA circuits.
 
----
+2. **Clear classical-quantum role separation**
+   A* handles candidate generation; QAOA handles combinatorial coordination.
 
-## 7. Project Summary
+3. **Conflict-aware objective with one-hot constraints**
+   The optimization directly models inter-robot interactions, not only individual path lengths.
 
-### Files Implemented
+4. **Auxiliary bounded quantum-inspired RL layer**
+   Rotation-angle representation provides stable, bounded learning dynamics for local navigation experiments.
 
-| File | Lines | Purpose | Phase |
-|------|-------|---------|-------|
-| `grid.py` | ~550 | Grid environment, obstacles, multi-robot setup | All |
-| `a_star.py` | ~300 | A\* pathfinding, 8-connected movement | Week 1 |
-| `apf.py` | ~300 | Potential field forces, stuck detection | Phase 2 |
-| `q_learning.py` | ~350 | Tabular RL, epsilon-greedy, Q-table | Phase 2 |
-| `quantum_q_learning.py` | ~500 | Ry gates, rotation angles, Qiskit integration | Phase 3 |
-| `hybrid_planner.py` | ~325 | 3-layer: A\* + APF + Quantum QL | Phase 3 |
-| `qaoa_optimizer.py` | ~690 | QUBO formulation, QAOA simulator, scalability | Phase 4 |
-| `multi_robot.py` | ~415 | Candidate paths, conflict matrix, classical selectors | Phase 1 |
-| `dynamic_env.py` | ~250 | Time-stepped simulation, collision detection | Phase 1 |
-| `visualize.py` | ~1300 | All plotting: grids, paths, animations, comparisons | All |
-| `simulator.py` | ~1200 | Interactive PyGame, real-time control | Phase 1+ |
-| `main.py` | ~770 | Master orchestrator, runs all phases | All |
-| `utils.py` | ~22 | Shared utility functions | All |
-
-**Total: ~6,970 lines of Python across 13 modules**
-
-### Output Artifacts: 24 files
-
-- 6 Week 1 outputs (A\* demos, comparisons, GIF)
-- 5 Phase 1 outputs (multi-robot environment, candidate paths, simulation GIF)
-- 3 Phase 2 outputs (APF trap, Q-Learning trap, comparison)
-- 7 Phase 3 outputs (quantum QL, hybrid planner, learning curves, comprehensive comparison)
-- 3 Phase 4 outputs (QAOA comparison, scalability chart, simulation GIF)
-
-### Phase Completion
-
-| Phase | What Was Built | Status |
-|-------|---------------|--------|
-| Week 1 | Grid + A\* + Greedy BFS + Visualization | Done |
-| Phase 1 | Multi-robot paths + Conflict analysis + Dynamic simulation + PyGame | Done |
-| Phase 2 | APF + Classical Q-Learning + 3-way comparison | Done |
-| Phase 3 | Quantum Q-Learning + Hybrid Planner + 5-way density comparison | Done |
-| Phase 4 | QAOA optimizer + QUBO formulation + Scalability benchmark | Done |
+5. **Honest evaluation protocol**
+   The report explicitly distinguishes demonstrated results (near-optimal quality and conflict handling) from future-scale claims (runtime advantage on larger hardware).
 
 ---
 
-## 8. How to Run
+## 6. Limitations
+
+1. No empirical wall-clock speedup over brute-force at current tested sizes.
+2. Simulator/backend limits prevent direct large-qubit demonstration in this project.
+3. QAOA remains variational; quality can depend on depth and optimizer restarts.
+4. Multi-robot benchmarks are still moderate in size compared with industrial-scale MRPP.
+
+---
+
+## 7. Reproducibility
 
 ```bash
-# Full demo (generates all 24 output files)
 cd src
 python main.py
-
-# Interactive simulator
-cd src
-python simulator.py
-
-# Quick QAOA test
-cd src
-python -c "
-from grid import Grid
-from multi_robot import prepare_qaoa_input
-from qaoa_optimizer import qaoa_select_full
-
-grid = Grid.create_multi_robot_env(size=20, num_robots=3, seed=42)
-ac = prepare_qaoa_input(grid, num_candidates=4, seed=42)['all_candidates']
-result = qaoa_select_full(ac, p=2, num_restarts=3, seed=42)
-print(result)
-"
 ```
+
+Additional scripts for paper-focused experiments are available in the source tree (including QAOA and QIA comparison scripts).
 
 ---
 
-## 9. References
+## 8. References
 
-1. **QER-LPD3QN**: Quantum-inspired deep reinforcement learning with qubit experience replay for path planning.
-2. **CAA\*QPSO**: Quantum Particle Swarm Optimization for 3D robot path planning.
-3. **Fuzzy A\* + Quantum Q-Learning + APF**: Hybrid planner for single-robot navigation (our work extends this to multi-robot with QAOA coordination).
+1. Hart, Nilsson, Raphael (1968): A Formal Basis for the Heuristic Determination of Minimum Cost Paths.
+2. Khatib (1986): Real-Time Obstacle Avoidance for Manipulators and Mobile Robots.
+3. Watkins and Dayan (1992): Q-Learning.
+4. Dong et al. (2008): Quantum Reinforcement Learning.
+5. Farhi, Goldstone, Gutmann (2014): A Quantum Approximate Optimization Algorithm.
+6. Lucas (2014): Ising formulations of many NP problems.
