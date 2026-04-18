@@ -47,6 +47,20 @@ Outputs are generated under:
 experiments/results/12_qaoa_honest/
 ```
 
+## Realtime Demo
+
+For a live professor demo with multiple robots, moving obstacles, and interactive obstacle injection:
+
+```bash
+cd src
+python simulator_paper_demo.py
+```
+
+This demo continuously replans using your paper novelty:
+
+1. A* candidate generation per robot
+2. QAOA selection across robots
+
 ## Dependencies
 
 Install with:

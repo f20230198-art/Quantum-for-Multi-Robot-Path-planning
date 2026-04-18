@@ -1,6 +1,7 @@
 # Core dependencies
 numpy
 matplotlib
+pygame
 scipy
 
 # Quantum backends (required for genuine Qiskit circuit simulation)
