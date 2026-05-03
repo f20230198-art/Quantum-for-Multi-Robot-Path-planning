@@ -114,9 +114,8 @@ We chose to be transparent in our report rather than oversell:
 
 ---
 
-## 6. Live Demo (Kalyani's part)
+## 6. Live Demo
 
-After this explanation, Kalyani will run `python simulator_paper_demo.py` showing:
 - 3 robots navigating a 20×20 grid in real time
 - 4 dynamic obstacles moving around
 - A\* generating candidates → QAOA selecting → robots executing
