@@ -58,6 +58,8 @@ This jointly encodes path quality, collision penalties, and one-path-per-robot f
 - Parameter optimization: COBYLA with multiple restarts.
 - Execution backends: NumPy statevector simulator and Qiskit AerSimulator.
 
+The NumPy backend is used as the default simulator because it directly implements the QAOA statevector with plain array operations, which keeps the prototype lightweight, dependency-friendly, and easy to run on ordinary laptops. This is appropriate for the small qubit counts tested in this project; Qiskit remains available as an alternative backend when installed and when we want a gate-level comparison.
+
 ### 3.4 Auxiliary Quantum-Inspired Q-Learning
 
 Each state-action pair is represented by rotation angle theta in [0, pi], with action probability:

@@ -61,6 +61,8 @@ We implemented **two backends**:
 - **Custom NumPy simulator** — built from scratch, statevector simulation
 - **Qiskit AerSimulator** — real gate-level circuits using IBM's Qiskit framework
 
+We use the NumPy backend as the default because it is the simplest way to simulate the QAOA statevector directly. It makes the project easy to run on a normal laptop, avoids extra backend setup, and is sufficient for the small problem sizes in our experiments. When Qiskit is installed, we still keep it as a comparison backend for gate-level runs.
+
 ---
 
 ## 4. Results
